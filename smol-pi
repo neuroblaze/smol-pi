@@ -406,27 +406,29 @@ fi
 # Boot the VM.
 # ---------------------------------------------------------------------------
 
+# Kill any orphaned smolvm-bin processes from a previous run that crashed
+# or was killed without clean shutdown. Each consumes ~2 GB RSS and would
+# accumulate until the host reboots. We match smolvm-bin processes running
+# our pi-sandbox.tar image.
+if [ -n "$(command -v pgrep)" ]; then
+  for pid in $(pgrep -x smolvm-bin 2>/dev/null); do
+    # Check if this process is using our image.
+    cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
+    case "$cmdline" in
+      *"$IMAGE"*) kill -TERM "$pid" 2>/dev/null ;;
+    esac
+  done
+fi
+
 # Clean up stale VM dirs from previous runs before booting.
 # smolvm 1.1.1 leaves VM state behind after ephemeral runs.
-# Run in background so it doesn't delay the boot.
 clean_smolvm_cache >/dev/null 2>&1 &
 
-# Run the VM (not exec — we need to clean up after it exits).
-# Use a trap to ensure the smolvm process is killed on any exit (SIGINT,
-# SIGTERM, SSH disconnect, terminal crash, etc.). Without this, the VM
-# stays running in memory — each consuming ~2 GB RSS — until the host reboots.
-VM_PID=""
-kill_vm() {
-  if [ -n "$VM_PID" ] && kill -0 "$VM_PID" 2>/dev/null; then
-    kill -TERM "$VM_PID" 2>/dev/null
-    # Give it a moment, then force kill if still alive.
-    sleep 0.5
-    kill -KILL "$VM_PID" 2>/dev/null
-  fi
-}
-trap kill_vm EXIT INT TERM HUP
-
-smolvm machine run \
+# Boot the VM with exec so it gets direct TTY control (interactive input,
+# terminal resize, signal delivery). The orphaned-process cleanup above
+# handles the crash case instead of a trap (which would require
+# backgrounding and break the TTY).
+exec smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
   -v "$CWD:/workspace" \
@@ -434,15 +436,4 @@ smolvm machine run \
   $NET_FLAGS \
   $ENV_FLAGS \
   -it \
-  -- /usr/local/bin/smol-pi-entrypoint $CMD "$@" &
-VM_PID=$!
-
-# Wait for the VM process to exit.
-wait $VM_PID 2>/dev/null
-VM_EXIT=$?
-VM_PID=""
-
-# Clean up the VM state dir left behind by this run.
-clean_smolvm_cache >/dev/null 2>&1
-
-exit $VM_EXIT
+  -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
