@@ -119,12 +119,16 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 RUN printf '%s\n' \
     '#!/bin/sh' \
-    '# smol-pi entrypoint: optionally rewrite DNS, cd to /workspace, then exec.' \
-    '# smolvm injects the host DNS at boot. If SMOL_PI_DNS is set, we override' \
-    '# /etc/resolv.conf with it (needed in block-local mode where the system DNS' \
-    '# is at a blocked private IP). If unset, we leave the injected DNS intact.' \
+    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
+    '# then exec.' \
+    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
+    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
+    '# This only affects the initial size — terminal resize signals still work.' \
     'if [ -n "$SMOL_PI_DNS" ]; then' \
     '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
+    'fi' \
+    'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
+    '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
     'fi' \
     'cd /workspace 2>/dev/null || true' \
     'exec "$@"' \

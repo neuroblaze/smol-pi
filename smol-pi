@@ -402,6 +402,27 @@ if [ -n "$DNS_SERVER" ]; then
   ENV_FLAGS="-e SMOL_PI_DNS=$DNS_SERVER"
 fi
 
+# Detect host terminal size and pass it to the VM.
+# smolvm allocates the PTY at 24x80 by default; the entrypoint uses these
+# env vars to resize the PTY to match the host terminal on startup.
+# Try stty first (most accurate), then fall back to COLUMNS/LINES env vars
+# (set by some shells, useful when running under a wrapper).
+TTY_COLS=""
+TTY_ROWS=""
+if command -v stty >/dev/null 2>&1; then
+  SIZE=$(stty size 2>/dev/null || true)
+  if [ -n "$SIZE" ]; then
+    TTY_ROWS=$(echo "$SIZE" | cut -d' ' -f1)
+    TTY_COLS=$(echo "$SIZE" | cut -d' ' -f2)
+  fi
+fi
+# Fall back to COLUMNS/LINES env vars if stty didn't work.
+if [ -z "$TTY_COLS" ] && [ -n "$COLUMNS" ]; then TTY_COLS="$COLUMNS"; fi
+if [ -z "$TTY_ROWS" ] && [ -n "$LINES" ]; then TTY_ROWS="$LINES"; fi
+if [ -n "$TTY_COLS" ] && [ -n "$TTY_ROWS" ]; then
+  ENV_FLAGS="$ENV_FLAGS -e COLUMNS=$TTY_COLS -e LINES=$TTY_ROWS"
+fi
+
 # ---------------------------------------------------------------------------
 # Boot the VM.
 # ---------------------------------------------------------------------------
