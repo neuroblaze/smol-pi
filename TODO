@@ -6,35 +6,14 @@ Ideas for improvement and things to investigate, in rough priority order.
 
 ## 1. Ensure `~/.pi` exists; add `--pi-dir` option
 
-The smol-pi launcher should `mkdir -p` the host `.pi` directory before
-booting, so a fresh machine doesn't fail with "mount source not found"
-(as happened during testing).
-
-Add an optional `--pi-dir <path>` flag so users can point at an alternate
-directory (e.g. a project-local `.pi/` for isolated configs, or a shared
-team directory). Default: `$HOME/.pi`.
-
-Effort: small.
-Risk: none.
+**Done.** The smol-pi launcher now `mkdir -p` the .pi directory before
+booting and accepts `--pi-dir <path>` (or `--pi-dir=<path>`) for an
+alternate mount point.
 
 ## 2. Use podman if available (avoid requiring root/dockerd)
 
-Docker requires a running daemon (and often root or a docker group
-membership). Podman is daemonless, rootless, and OCI-compatible — `podman
-build` and `podman save` are drop-in replacements for the build step.
-
-`build.sh` (to be renamed `smol-pi-build`, see item 4) should:
-  - Detect `podman` on PATH first, fall back to `docker`.
-  - Use whichever is found for both `build` and `save`.
-  - The resulting tar is identical (OCI archive format), so smolvm boots
-    it the same way.
-
-This would make the entire toolchain rootless on podman-equipped hosts.
-
-Effort: small.
-Risk: low — podman's `save` output is OCI-compatible; verify smolvm
-accepts a `podman save` archive (it should, since both produce OCI image
-archives, but worth a quick smoke test).
+**Done.** `smol-pi-build` detects podman first, falls back to docker.
+Verified: podman-built images boot identically in smolvm.
 
 ## 3. Compress the image
 
@@ -47,29 +26,31 @@ marginal size win. Revisit if smolvm adds native `.tar.zst` support.
 
 ## 4. Refactor `build.sh` -> `smol-pi-build` with Dockerfile options
 
-Rename `build.sh` to `smol-pi-build` and generalize it into a proper
-build utility:
+**Done.** `smol-pi-build` supports `-f <path>`, `--generate-dockerfile`,
+and `--image-tag <name>`. The default Dockerfile is embedded as a
+heredoc so `--generate-dockerfile` works without the repo.
 
-  - `smol-pi-build`                     # build with default Dockerfile.pi
-  - `smol-pi-build -f <path>`            # build with a custom Dockerfile
-  - `smol-pi-build --generate-dockerfile` # write a copy of the default
-                                          # Dockerfile.pi to CWD for editing
-  - `smol-pi-build --image-tag <name>`   # override the docker/podman tag
+## 5. Network modes (`--network-mode`)
 
-The `--generate-dockerfile` flow: copies the bundled default
-`Dockerfile.pi` to `./Dockerfile.pi` in the current directory (refusing
-to overwrite an existing one), so the user can `smol-pi-build -f
-./Dockerfile.pi` after customizing it. This lets users layer in their
-own tools, extensions, or pinned versions without forking the repo.
+**Done.** Four modes implemented and tested:
 
-The bundled default Dockerfile should live alongside the script (or be
-embedded via heredoc) so `smol-pi-build --generate-dockerfile` works
-without the original repo checkout.
+  - `block-local` (default): public internet allowed, private networks
+    blocked. Uses `--net` + 56 `--allow-cidr` flags (complement of
+    RFC1918/CGNAT/ULA/link-local).
+  - `block-all`: all egress blocked. Uses `--outbound-localhost-only`
+    (not `--net`, which with no filters = allow-all). Combine with
+    `--allow-host <host>` to punch holes (e.g. for LLM API access).
+  - `block-internet`: private networks allowed, public internet blocked.
+    Uses `--net` + 9 `--allow-cidr` flags (the private ranges themselves).
+  - `allow-all`: no filtering. Uses `--net` only.
 
-Effort: medium.
-Risk: low — mostly CLI plumbing.
+Key finding: `--allow-host` triggers smolvm's DNS filtering (only
+allowed hostnames resolve), so it is **incompatible** with the CIDR-based
+modes (block-local, block-internet) and is rejected there with an error.
+It is only valid with `block-all`, where DNS filtering is the desired
+behavior.
 
-## 5. `curl <url> | sh` install pattern
+## 6. `curl <url> | sh` install pattern
 
 An install script that:
   1. Downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` (or a
