@@ -1,0 +1,26 @@
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates coreutils curl file findutils git gnupg \
+       iproute2 iputils-ping iputils-tracepath jq less \
+       make openssh-client procps ripgrep rsync \
+       sudo tar unzip vim xz-utils zstd \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '# smol-pi entrypoint: rewrite DNS to a public resolver, then exec the real command.' \
+    '# smolvm injects the host DNS at boot; we override it here so name resolution' \
+    '# does not depend on the (blocked) private gateway.' \
+    'echo "nameserver 9.9.9.9" > /etc/resolv.conf' \
+    'exec "$@"' \
+  > /usr/local/bin/smol-pi-entrypoint \
+  && chmod +x /usr/local/bin/smol-pi-entrypoint
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]
