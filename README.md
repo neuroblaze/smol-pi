@@ -57,6 +57,73 @@ The image is based on `node:24-trixie-slim` and includes:
 - [uv](https://github.com/astral-sh/uv) for Python work
 - QoL utilities: curl, ripgrep, jq, git, vim, less, file, make, rsync, ssh, sudo, etc.
 
+### Custom images
+
+You can build a custom image with additional packages, extensions, or tools. Start by generating the default Dockerfile to edit:
+
+```sh
+smol-pi-build --generate-dockerfile    # writes Dockerfile.pi to CWD
+```
+
+Then modify it to suit your needs. For example, to add Python and a pi extension:
+
+```dockerfile
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates coreutils curl file findutils git gnupg \
+       iproute2 jq fd-find less \
+       make openssh-client procps ripgrep rsync \
+       sudo tar unzip vim xz-utils zstd \
+       python3 python3-pip \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+# Install a pi extension into the image
+RUN pi install @anthropic/plan-mode
+
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
+    '# then exec.' \
+    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
+    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
+    '# This only affects the initial size — terminal resize signals still work.' \
+    'if [ -n "$SMOL_PI_DNS" ]; then' \
+    '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
+    'fi' \
+    'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
+    '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
+    'fi' \
+    'cd /workspace 2>/dev/null || true' \
+    'exec "$@"' \
+  > /usr/local/bin/smol-pi-entrypoint \
+  && chmod +x /usr/local/bin/smol-pi-entrypoint
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]
+```
+
+Then build with your custom Dockerfile:
+
+```sh
+smol-pi-build -f ./Dockerfile.pi
+```
+
+The built `pi-sandbox.tar` is written next to the `smol-pi-build` script (typically `~/.local/bin/`). `smol-pi` looks for the image there automatically. The `--no-cache` flag ensures a clean build each time, and orphaned image archives from previous builds are cleaned up automatically.
+
+If you want to keep multiple images, use `--image-tag` to name them:
+
+```sh
+smol-pi-build -f ./Dockerfile.custom --image-tag pi-custom
+```
+
+The image tag only affects the container image name during build — `smol-pi` always loads `pi-sandbox.tar` regardless of the tag used to build it.
+
 ## Run
 
 ```sh
