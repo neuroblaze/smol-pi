@@ -119,10 +119,13 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 RUN printf '%s\n' \
     '#!/bin/sh' \
-    '# smol-pi entrypoint: rewrite DNS to a public resolver, then exec the real command.' \
-    '# smolvm injects the host DNS at boot; we override it here so name resolution' \
-    '# does not depend on the (blocked) private gateway.' \
-    'echo "nameserver 9.9.9.9" > /etc/resolv.conf' \
+    '# smol-pi entrypoint: optionally rewrite DNS, then exec the real command.' \
+    '# smolvm injects the host DNS at boot. If SMOL_PI_DNS is set, we override' \
+    '# /etc/resolv.conf with it (needed in block-local mode where the system DNS' \
+    '# is at a blocked private IP). If unset, we leave the injected DNS intact.' \
+    'if [ -n "$SMOL_PI_DNS" ]; then' \
+    '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
+    'fi' \
     'exec "$@"' \
   > /usr/local/bin/smol-pi-entrypoint \
   && chmod +x /usr/local/bin/smol-pi-entrypoint

@@ -2,9 +2,10 @@
 # smol-pi: boot an ephemeral pi-sandbox microVM via smolvm.
 #
 # Mounts the current working directory at /workspace and the host .pi
-# directory at /root/.pi (read-write). DNS is forced to 9.9.9.9 by the
-# image entrypoint (smolvm injects host DNS at boot; the entrypoint
-# rewrites /etc/resolv.conf afterwards).
+# directory at /root/.pi (read-write). DNS behavior depends on the network
+# mode: in block-local mode, DNS is forced to 9.9.9.9 (since the system DNS
+# is typically at a blocked private IP); in other modes, the system DNS
+# injected by smolvm is used (so internal hostnames resolve).
 #
 # Usage:
 #   smol-pi                       # drop into pi interactively
@@ -13,6 +14,7 @@
 #   smol-pi --pi-dir <path>       # use an alternate .pi directory (default: ~/.pi)
 #   smol-pi --network-mode <mode> # set network egress mode (default: block-local)
 #   smol-pi --allow-host <host>   # allow egress to a specific host (block-all only)
+#   smol-pi --dns <server>        # override the DNS server (default: mode-dependent)
 #   smol-pi --help                # show this help
 #
 # Prereqs: smolvm on PATH, and ./pi-sandbox.tar built via smol-pi-build.
@@ -55,6 +57,9 @@ NETWORK_MODE="block-local"
 # Allow-host exceptions (only used in block-all mode).
 ALLOW_HOSTS=""
 
+# DNS override (empty = mode-dependent default).
+DNS_OVERRIDE=""
+
 usage() {
   cat <<USAGE
 smol-pi: boot an ephemeral pi-sandbox microVM
@@ -66,21 +71,26 @@ Usage:
   smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
   smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
   smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
+  smol-pi --dns <server>        Override DNS server (default: mode-dependent)
   smol-pi --help                  Show this help
 
 Network modes:
   block-local     Allow public internet, block private networks (default).
+                  DNS forced to 9.9.9.9 (system DNS is at a blocked IP).
   block-all       Block all egress; use --allow-host to punch holes
                   (e.g. --allow-host api.anthropic.com for LLM access).
+                  DNS filtered to allowed hosts by smolvm.
   block-internet  Allow private networks, block public internet.
+                  Uses system DNS (so internal hostnames resolve).
   allow-all       Allow all egress (no filtering).
+                  Uses system DNS.
 
 Mounts:
   \$PWD            ->  /workspace
   <pi-dir>        ->  /root/.pi   (read-write; default ~/.pi, created if absent)
 
-DNS: forced to 9.9.9.9 (except in block-all mode, where smolvm's
-     --allow-host DNS filtering takes over).
+DNS: block-local forces 9.9.9.9; other modes use the system DNS injected
+     by smolvm (so internal hostnames resolve). Override with --dns.
 
 Memory: 4 GiB (elastic via virtio-balloon).
 
@@ -138,6 +148,18 @@ while [ $# -gt 0 ]; do
       ;;
     --allow-host=*)
       ALLOW_HOSTS="$ALLOW_HOSTS ${1#--allow-host=}"
+      shift
+      ;;
+    --dns)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --dns requires an argument" >&2
+        exit 2
+      fi
+      DNS_OVERRIDE="$2"
+      shift 2
+      ;;
+    --dns=*)
+      DNS_OVERRIDE="${1#--dns=}"
       shift
       ;;
     *)
@@ -200,6 +222,19 @@ fi
 # ---------------------------------------------------------------------------
 CWD="$(pwd)"
 
+# DNS configuration per mode:
+# - block-local: system DNS is at a blocked private IP, so force 9.9.9.9.
+# - block-all: smolvm's --allow-host handles DNS filtering; don't override.
+# - block-internet/allow-all: system DNS is reachable, use it for internal
+#   hostname resolution.
+# - User can override with --dns <server>.
+DNS_SERVER=""
+if [ -n "$DNS_OVERRIDE" ]; then
+  DNS_SERVER="$DNS_OVERRIDE"
+elif [ "$NETWORK_MODE" = "block-local" ]; then
+  DNS_SERVER="9.9.9.9"
+fi
+
 # Build the network flags based on the mode.
 # - block-local/block-internet: --net + --allow-cidr (full DNS, IP-filtered)
 # - block-all: --outbound-localhost-only + --allow-host (DNS filtered to
@@ -230,6 +265,12 @@ case "$NETWORK_MODE" in
     ;;
 esac
 
+# Build the env flags for DNS injection.
+ENV_FLAGS=""
+if [ -n "$DNS_SERVER" ]; then
+  ENV_FLAGS="-e SMOL_PI_DNS=$DNS_SERVER"
+fi
+
 # ---------------------------------------------------------------------------
 # Boot the VM.
 # ---------------------------------------------------------------------------
@@ -239,5 +280,6 @@ exec smolvm machine run \
   -v "$CWD:/workspace" \
   -v "$PI_DIR:/root/.pi" \
   $NET_FLAGS \
+  $ENV_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
