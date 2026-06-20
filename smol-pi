@@ -194,8 +194,78 @@ if [ -n "$ALLOW_HOSTS" ] && [ "$NETWORK_MODE" != "block-all" ]; then
   exit 2
 fi
 
+# Resolve PI_DIR to an absolute path and create it if it doesn't exist.
+case "$PI_DIR" in
+  /*) ;;
+  *)  PI_DIR="$(cd ~ && pwd)/$PI_DIR" ;;
+esac
+if [ ! -d "$PI_DIR" ]; then
+  mkdir -p "$PI_DIR"
+fi
+
+CWD="$(pwd)"
+
 # ---------------------------------------------------------------------------
-# Sanity-check prereqs.
+# Container fast path for pi subcommands.
+#
+# pi subcommands like install/remove/uninstall/update/list/config only mutate
+# ~/.pi — they don't invoke the agent and don't need sandboxing. Running them
+# in a container (podman/docker) instead of booting a full VM saves ~10s of
+# startup time.
+#
+# We detect these subcommands by checking the first non-flag argument.
+# ---------------------------------------------------------------------------
+if [ "$SHELL_MODE" -eq 0 ] && [ $# -gt 0 ]; then
+  case "$1" in
+    install|remove|uninstall|update|list|config)
+      # Find a container runtime. Prefer podman (rootless), fall back to docker.
+      if command -v podman >/dev/null 2>&1; then
+        CT=podman
+      elif command -v docker >/dev/null 2>&1; then
+        CT=docker
+      else
+        echo "smol-pi: pi subcommand '$1' needs podman or docker for the fast path." >&2
+        echo "smol-pi: neither was found on PATH. Install one of:" >&2
+        echo "  podman  (rootless) — https://podman.io/docs/installation" >&2
+        echo "  docker           — https://docs.docker.com/engine/install/" >&2
+        exit 1
+      fi
+
+      # Load the image from the tarball. podman can load directly; docker too.
+      IMAGE_TAG="pi-sandbox"
+      if ! $CT image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
+        if [ ! -f "$IMAGE" ]; then
+          echo "smol-pi: image not found at $IMAGE" >&2
+          echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build" >&2
+          exit 1
+        fi
+        $CT load -i "$IMAGE" >/dev/null 2>&1
+      fi
+
+      # Run the subcommand in a container.
+      # - Mount ~/.pi at /root/.pi (RW — subcommands mutate it)
+      # - Mount CWD at /workspace (some subcommands read from it)
+      # - For docker, use --user to avoid root-owned files in ~/.pi.
+      #   podman rootless handles UID mapping automatically.
+      CT_USER_FLAGS=""
+      if [ "$CT" = "docker" ]; then
+        CT_USER_FLAGS="--user $(id -u):$(id -g)"
+      fi
+
+      exec $CT run --rm -it \
+        $CT_USER_FLAGS \
+        -v "$PI_DIR:/root/.pi" \
+        -v "$CWD:/workspace" \
+        -w /workspace \
+        "$IMAGE_TAG" \
+        "$@"
+
+      ;;
+  esac
+fi
+
+# ---------------------------------------------------------------------------
+# Sanity-check prereqs (VM path).
 # ---------------------------------------------------------------------------
 if ! command -v smolvm >/dev/null 2>&1; then
   echo "smol-pi: smolvm not found on PATH. Install: curl -sSL https://smolmachines.com/install.sh | bash" >&2
@@ -207,20 +277,6 @@ if [ ! -f "$IMAGE" ]; then
   echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build" >&2
   exit 1
 fi
-
-# Resolve PI_DIR to an absolute path and create it if it doesn't exist.
-case "$PI_DIR" in
-  /*) ;;
-  *)  PI_DIR="$(cd ~ && pwd)/$PI_DIR" ;;
-esac
-if [ ! -d "$PI_DIR" ]; then
-  mkdir -p "$PI_DIR"
-fi
-
-# ---------------------------------------------------------------------------
-# Assemble the smolvm network flags based on the mode.
-# ---------------------------------------------------------------------------
-CWD="$(pwd)"
 
 # DNS configuration per mode:
 # - block-local: system DNS is at a blocked private IP, so force 9.9.9.9.
