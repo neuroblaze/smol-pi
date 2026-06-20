@@ -78,7 +78,7 @@ smol-pi --network-mode allow-all      # everything allowed
 
 | Mode | Public internet | Private networks | DNS | Use case |
 |------|-----------------|-------------------|-----|----------|
-| `block-local` (default) | allowed | blocked | forced to 9.9.9.9 | General use — agent can reach APIs but not your LAN |
+| `block-local` (default) | allowed | blocked | forced to 1.1.1.1 | General use — agent can reach APIs but not your LAN |
 | `block-all` | blocked | blocked | filtered to allowed hosts | Maximum lockdown — punch holes with `--allow-host` |
 | `block-internet` | blocked | allowed | system (injected) | Internal/corporate environments |
 | `allow-all` | allowed | allowed | system (injected) | No restrictions, pure isolation |
@@ -97,7 +97,7 @@ smol-pi --network-mode block-all --allow-host api.anthropic.com
 smol-pi --dns 1.1.1.1                  # override DNS in any mode
 ```
 
-By default, `block-local` forces 9.9.9.9 (the system DNS is typically at your LAN gateway, which is a blocked private IP). All other modes use the system DNS that smolvm injects at boot, so internal hostnames resolve. Use `--dns` to override in any mode.
+By default, `block-local` forces 1.1.1.1 (the system DNS is typically at your LAN gateway, which is a blocked private IP). All other modes use the system DNS that smolvm injects at boot, so internal hostnames resolve. Use `--dns` to override in any mode.
 
 ## Options
 

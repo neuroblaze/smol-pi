@@ -3,7 +3,7 @@
 #
 # Mounts the current working directory at /workspace and the host .pi
 # directory at /root/.pi (read-write). DNS behavior depends on the network
-# mode: in block-local mode, DNS is forced to 9.9.9.9 (since the system DNS
+# mode: in block-local mode, DNS is forced to 1.1.1.1 (since the system DNS
 # is typically at a blocked private IP); in other modes, the system DNS
 # injected by smolvm is used (so internal hostnames resolve).
 #
@@ -78,7 +78,7 @@ Usage:
 
 Network modes:
   block-local     Allow public internet, block private networks (default).
-                  DNS forced to 9.9.9.9 (system DNS is at a blocked IP).
+                  DNS forced to 1.1.1.1 (system DNS is at a blocked IP).
   block-all       Block all egress; use --allow-host to punch holes
                   (e.g. --allow-host api.anthropic.com for LLM access).
                   DNS filtered to allowed hosts by smolvm.
@@ -91,7 +91,7 @@ Mounts:
   \$PWD            ->  /workspace
   <pi-dir>        ->  /root/.pi   (read-write; default ~/.pi, created if absent)
 
-DNS: block-local forces 9.9.9.9; other modes use the system DNS injected
+DNS: block-local forces 1.1.1.1; other modes use the system DNS injected
      by smolvm (so internal hostnames resolve). Override with --dns.
 
 Memory: 4 GiB (elastic via virtio-balloon).
@@ -354,7 +354,7 @@ if [ ! -f "$IMAGE" ]; then
 fi
 
 # DNS configuration per mode:
-# - block-local: system DNS is at a blocked private IP, so force 9.9.9.9.
+# - block-local: system DNS is at a blocked private IP, so force 1.1.1.1.
 # - block-all: smolvm's --allow-host handles DNS filtering; don't override.
 # - block-internet/allow-all: system DNS is reachable, use it for internal
 #   hostname resolution.
@@ -363,7 +363,7 @@ DNS_SERVER=""
 if [ -n "$DNS_OVERRIDE" ]; then
   DNS_SERVER="$DNS_OVERRIDE"
 elif [ "$NETWORK_MODE" = "block-local" ]; then
-  DNS_SERVER="9.9.9.9"
+  DNS_SERVER="1.1.1.1"
 fi
 
 # Build the network flags based on the mode.
