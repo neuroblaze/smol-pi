@@ -1,18 +1,21 @@
 #!/bin/sh
 # smol-pi: boot an ephemeral pi-sandbox microVM via smolvm.
 #
-# Mounts the current working directory at /workspace and the host ~/.pi at
-# /root/.pi (read-write). Network egress is allowed to the public internet
-# but blocked to RFC1918 private ranges, CGNAT, and IPv6 ULA/link-local.
-# DNS is forced to 9.9.9.9 by the image entrypoint (smolvm injects host DNS
-# at boot; the entrypoint rewrites /etc/resolv.conf afterwards).
+# Mounts the current working directory at /workspace and the host .pi
+# directory at /root/.pi (read-write). Network egress is allowed to the
+# public internet but blocked to RFC1918 private ranges, CGNAT, and IPv6
+# ULA/link-local. DNS is forced to 9.9.9.9 by the image entrypoint (smolvm
+# injects host DNS at boot; the entrypoint rewrites /etc/resolv.conf
+# afterwards).
 #
 # Usage:
-#   smol-pi              # drop into pi interactively
-#   smol-pi <args>       # run pi with args (e.g. smol-pi -p "do the thing")
-#   smol-pi --shell      # drop into a plain shell instead of pi
+#   smol-pi                       # drop into pi interactively
+#   smol-pi <args>                # run pi with args (e.g. smol-pi -p "do the thing")
+#   smol-pi --shell               # drop into a plain shell instead of pi
+#   smol-pi --pi-dir <path>       # use an alternate .pi directory (default: ~/.pi)
+#   smol-pi --help                # show this help
 #
-# Prereqs: smolvm on PATH, and ./pi-sandbox.tar built via ./build.sh.
+# Prereqs: smolvm on PATH, and ./pi-sandbox.tar built via smol-pi-build.
 
 set -e
 
@@ -29,63 +32,31 @@ set -e
 ALLOW_CIDRS="0.0.0.0/5 8.0.0.0/7 11.0.0.0/8 12.0.0.0/6 16.0.0.0/4 32.0.0.0/3 64.0.0.0/3 96.0.0.0/6 100.0.0.0/10 100.128.0.0/9 101.0.0.0/8 102.0.0.0/7 104.0.0.0/5 112.0.0.0/4 128.0.0.0/3 160.0.0.0/5 168.0.0.0/8 169.0.0.0/9 169.128.0.0/10 169.192.0.0/11 169.224.0.0/12 169.240.0.0/13 169.248.0.0/14 169.252.0.0/15 169.255.0.0/16 170.0.0.0/7 172.0.0.0/12 172.32.0.0/11 172.64.0.0/10 172.128.0.0/9 173.0.0.0/8 174.0.0.0/7 176.0.0.0/4 192.0.0.0/9 192.128.0.0/11 192.160.0.0/13 192.169.0.0/16 192.170.0.0/15 192.172.0.0/14 192.176.0.0/12 192.192.0.0/10 193.0.0.0/8 194.0.0.0/7 196.0.0.0/6 200.0.0.0/5 208.0.0.0/4 224.0.0.0/3 ::/1 8000::/2 c000::/3 e000::/4 f000::/5 f800::/6 fe00::/9 fec0::/10 ff00::/8"
 
 # ---------------------------------------------------------------------------
-# Resolve paths and sanity-check prereqs.
+# Resolve paths and parse options.
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 IMAGE="$SCRIPT_DIR/pi-sandbox.tar"
 
-if ! command -v smolvm >/dev/null 2>&1; then
-  echo "smol-pi: smolvm not found on PATH. Install: curl -sSL https://smolmachines.com/install.sh | bash" >&2
-  exit 1
-fi
+# Default .pi directory: ~/.pi (resolved to an absolute path).
+PI_DIR="$(cd ~ && pwd)/.pi"
 
-if [ ! -f "$IMAGE" ]; then
-  echo "smol-pi: image not found at $IMAGE" >&2
-  echo "smol-pi: build it first with: $SCRIPT_DIR/build.sh" >&2
-  exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Build the smolvm flags.
-# ---------------------------------------------------------------------------
-# Memory in MiB (4 GiB)
+# Memory in MiB (4 GiB).
 MEM=4096
 
-# Mounts: cwd -> /workspace, ~/.pi -> /root/.pi (read-write)
-CWD="$(pwd)"
-PI_HOME="$(cd ~ && pwd)"
-
-# Assemble allow-cidr flags.
-CIDR_FLAGS=""
-for cidr in $ALLOW_CIDRS; do
-  CIDR_FLAGS="$CIDR_FLAGS --allow-cidr $cidr"
-done
-
-# Determine the command to run.
-# All commands are wrapped through /usr/local/bin/smol-pi-entrypoint, which
-# rewrites /etc/resolv.conf to 9.9.9.9 (smolvm injects host DNS at boot and
-# does not run the Docker ENTRYPOINT when trailing args are passed).
-#
-#   --shell  -> /bin/sh (skip pi)
-#   default -> pi [args...]
-case "$1" in
-  --shell)
-    shift
-    CMD="/bin/sh"
-    ;;
-  --help|-h)
-    cat <<USAGE
+usage() {
+  cat <<USAGE
 smol-pi: boot an ephemeral pi-sandbox microVM
 
 Usage:
-  smol-pi                Drop into pi interactively
-  smol-pi <pi-args>      Run pi with args (e.g. smol-pi -p "fix the bug")
-  smol-pi --shell        Drop into a plain shell (/bin/sh) instead of pi
-  smol-pi --help         Show this help
+  smol-pi                       Drop into pi interactively
+  smol-pi <pi-args>              Run pi with args (e.g. smol-pi -p "fix the bug")
+  smol-pi --shell                Drop into a plain shell (/bin/sh) instead of pi
+  smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
+  smol-pi --help                  Show this help
 
 Mounts:
-  \$PWD          ->  /workspace
-  ~/.pi         ->  /root/.pi   (read-write)
+  \$PWD            ->  /workspace
+  <pi-dir>        ->  /root/.pi   (read-write; default ~/.pi, created if absent)
 
 Network:
   Egress allowed to the public internet; RFC1918, CGNAT, IPv6 ULA and
@@ -95,12 +66,80 @@ Memory: 4 GiB (elastic via virtio-balloon).
 
 Image: $IMAGE
 USAGE
-    exit 0
-    ;;
-  *)
-    CMD="pi"
-    ;;
+}
+
+# Default command if no args are given: pi interactively.
+CMD="pi"
+SHELL_MODE=0
+
+# Parse our own flags. Everything else is passed through to the command.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    --shell)
+      shift
+      CMD="/bin/sh"
+      SHELL_MODE=1
+      ;;
+    --pi-dir)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --pi-dir requires an argument" >&2
+        exit 2
+      fi
+      PI_DIR="$2"
+      shift 2
+      ;;
+    --pi-dir=*)
+      PI_DIR="${1#--pi-dir=}"
+      shift
+      ;;
+    *)
+      # First non-smol-pi arg: stop parsing, pass the rest through.
+      # In shell mode these args go to /bin/sh; otherwise to pi.
+      if [ "$SHELL_MODE" -eq 0 ]; then
+        CMD="pi"
+      fi
+      break
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Sanity-check prereqs.
+# ---------------------------------------------------------------------------
+if ! command -v smolvm >/dev/null 2>&1; then
+  echo "smol-pi: smolvm not found on PATH. Install: curl -sSL https://smolmachines.com/install.sh | bash" >&2
+  exit 1
+fi
+
+if [ ! -f "$IMAGE" ]; then
+  echo "smol-pi: image not found at $IMAGE" >&2
+  echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build" >&2
+  exit 1
+fi
+
+# Resolve PI_DIR to an absolute path and create it if it doesn't exist.
+case "$PI_DIR" in
+  /*) ;;
+  *)  PI_DIR="$(cd ~ && pwd)/$PI_DIR" ;;
 esac
+if [ ! -d "$PI_DIR" ]; then
+  mkdir -p "$PI_DIR"
+fi
+
+# ---------------------------------------------------------------------------
+# Assemble the smolvm flags.
+# ---------------------------------------------------------------------------
+CWD="$(pwd)"
+
+# Assemble allow-cidr flags.
+CIDR_FLAGS=""
+for cidr in $ALLOW_CIDRS; do
+  CIDR_FLAGS="$CIDR_FLAGS --allow-cidr $cidr"
+done
 
 # ---------------------------------------------------------------------------
 # Boot the VM.
@@ -110,7 +149,7 @@ exec smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
   -v "$CWD:/workspace" \
-  -v "$PI_HOME/.pi:/root/.pi" \
+  -v "$PI_DIR:/root/.pi" \
   $CIDR_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"

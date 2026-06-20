@@ -1,0 +1,174 @@
+#!/bin/sh
+# smol-pi-build: build the pi-sandbox image and export it as a tar for
+# smolvm to boot.
+#
+# Usage:
+#   smol-pi-build                       # build with the default Dockerfile
+#   smol-pi-build -f <path>             # build with a custom Dockerfile
+#   smol-pi-build --generate-dockerfile # write the default Dockerfile to CWD
+#   smol-pi-build --image-tag <name>    # override the image tag
+#
+# Prefers podman (rootless, daemonless) over docker if available.
+
+set -e
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+IMAGE_TAG="pi-sandbox"
+TARBALL="pi-sandbox.tar"
+DOCKERFILE=""
+GENERATE=0
+
+usage() {
+  cat <<USAGE
+smol-pi-build: build the pi-sandbox image and export a tar for smolvm
+
+Usage:
+  smol-pi-build                       Build with the default Dockerfile
+  smol-pi-build -f <path>             Build with a custom Dockerfile
+  smol-pi-build --generate-dockerfile Write the default Dockerfile.pi to CWD
+  smol-pi-build --image-tag <name>    Override the image tag (default: pi-sandbox)
+
+The build uses podman if available, otherwise docker.
+The output tar is written next to this script as $TARBALL.
+USAGE
+}
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --help|-h)
+      usage
+      exit 0
+      ;;
+    -f)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi-build: -f requires a path argument" >&2
+        exit 2
+      fi
+      DOCKERFILE="$2"
+      shift 2
+      ;;
+    -f=*)
+      DOCKERFILE="${1#-f=}"
+      shift
+      ;;
+    --generate-dockerfile)
+      GENERATE=1
+      shift
+      ;;
+    --image-tag)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi-build: --image-tag requires an argument" >&2
+        exit 2
+      fi
+      IMAGE_TAG="$2"
+      shift 2
+      ;;
+    --image-tag=*)
+      IMAGE_TAG="${1#--image-tag=}"
+      shift
+      ;;
+    *)
+      echo "smol-pi-build: unknown option: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Detect container tool: prefer podman (rootless), fall back to docker.
+# ---------------------------------------------------------------------------
+if command -v podman >/dev/null 2>&1; then
+  CT=podman
+elif command -v docker >/dev/null 2>&1; then
+  CT=docker
+else
+  echo "smol-pi-build: neither podman nor docker found on PATH." >&2
+  echo "smol-pi-build: install one of:" >&2
+  echo "  podman  (rootless, no daemon) — https://podman.io/docs/installation" >&2
+  echo "  docker  (requires dockerd)    — https://docs.docker.com/engine/install/" >&2
+  exit 1
+fi
+
+# ---------------------------------------------------------------------------
+# Handle --generate-dockerfile: write the default Dockerfile to CWD.
+# ---------------------------------------------------------------------------
+# The default Dockerfile is embedded below so this script is self-contained.
+write_default_dockerfile() {
+  target="$1"
+  if [ -f "$target" ]; then
+    echo "smol-pi-build: refusing to overwrite existing $target" >&2
+    echo "smol-pi-build: remove it first if you want a fresh copy." >&2
+    exit 1
+  fi
+  cat > "$target" <<'DOCKERFILE'
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates coreutils curl file findutils git gnupg \
+       iproute2 iputils-ping iputils-tracepath jq less \
+       make openssh-client procps ripgrep rsync \
+       sudo tar unzip vim xz-utils zstd \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '# smol-pi entrypoint: rewrite DNS to a public resolver, then exec the real command.' \
+    '# smolvm injects the host DNS at boot; we override it here so name resolution' \
+    '# does not depend on the (blocked) private gateway.' \
+    'echo "nameserver 9.9.9.9" > /etc/resolv.conf' \
+    'exec "$@"' \
+  > /usr/local/bin/smol-pi-entrypoint \
+  && chmod +x /usr/local/bin/smol-pi-entrypoint
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]
+DOCKERFILE
+  echo "smol-pi-build: wrote default Dockerfile to $target"
+}
+
+if [ "$GENERATE" -eq 1 ]; then
+  write_default_dockerfile "./Dockerfile.pi"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve which Dockerfile to build.
+# ---------------------------------------------------------------------------
+if [ -n "$DOCKERFILE" ]; then
+  # User-supplied path (may be relative to CWD or absolute).
+  if [ ! -f "$DOCKERFILE" ]; then
+    echo "smol-pi-build: Dockerfile not found: $DOCKERFILE" >&2
+    exit 1
+  fi
+  BUILD_CONTEXT="$(dirname "$DOCKERFILE")"
+  BUILD_FILE="$DOCKERFILE"
+else
+  # Default: the bundled Dockerfile.pi next to this script.
+  BUILD_FILE="$SCRIPT_DIR/Dockerfile.pi"
+  if [ ! -f "$BUILD_FILE" ]; then
+    echo "smol-pi-build: default Dockerfile not found at $BUILD_FILE" >&2
+    echo "smol-pi-build: generate one with: smol-pi-build --generate-dockerfile" >&2
+    exit 1
+  fi
+  BUILD_CONTEXT="$SCRIPT_DIR"
+fi
+
+# ---------------------------------------------------------------------------
+# Build and export.
+# ---------------------------------------------------------------------------
+echo "==> Building $IMAGE_TAG with $CT (Dockerfile: $BUILD_FILE)"
+$CT build -t "$IMAGE_TAG" -f "$BUILD_FILE" "$BUILD_CONTEXT"
+
+echo "==> Exporting to $TARBALL"
+# Remove any existing tarball — podman save refuses to overwrite.
+rm -f "$SCRIPT_DIR/$TARBALL"
+$CT save "$IMAGE_TAG" -o "$SCRIPT_DIR/$TARBALL"
+
+echo "==> Done. Run with: $SCRIPT_DIR/smol-pi"

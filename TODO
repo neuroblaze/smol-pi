@@ -1,0 +1,132 @@
+# smol-pi TODO
+
+Ideas for improvement and things to investigate, in rough priority order.
+
+---
+
+## 1. Ensure `~/.pi` exists; add `--pi-dir` option
+
+The smol-pi launcher should `mkdir -p` the host `.pi` directory before
+booting, so a fresh machine doesn't fail with "mount source not found"
+(as happened during testing).
+
+Add an optional `--pi-dir <path>` flag so users can point at an alternate
+directory (e.g. a project-local `.pi/` for isolated configs, or a shared
+team directory). Default: `$HOME/.pi`.
+
+Effort: small.
+Risk: none.
+
+## 2. Use podman if available (avoid requiring root/dockerd)
+
+Docker requires a running daemon (and often root or a docker group
+membership). Podman is daemonless, rootless, and OCI-compatible — `podman
+build` and `podman save` are drop-in replacements for the build step.
+
+`build.sh` (to be renamed `smol-pi-build`, see item 4) should:
+  - Detect `podman` on PATH first, fall back to `docker`.
+  - Use whichever is found for both `build` and `save`.
+  - The resulting tar is identical (OCI archive format), so smolvm boots
+    it the same way.
+
+This would make the entire toolchain rootless on podman-equipped hosts.
+
+Effort: small.
+Risk: low — podman's `save` output is OCI-compatible; verify smolvm
+accepts a `podman save` archive (it should, since both produce OCI image
+archives, but worth a quick smoke test).
+
+## 3. Compress the image
+
+**De-scoped.** gzip is slow to compress (~the same order as the docker
+build itself), and the disk footprint (637 MB) is acceptable for a
+one-time artifact. zstd is fast but smolvm doesn't recognize `.tar.zst`
+on disk, and the stdin path is incompatible with interactive `-it` use
+(see empirical findings in git history). Not worth the plumbing for the
+marginal size win. Revisit if smolvm adds native `.tar.zst` support.
+
+## 4. Refactor `build.sh` -> `smol-pi-build` with Dockerfile options
+
+Rename `build.sh` to `smol-pi-build` and generalize it into a proper
+build utility:
+
+  - `smol-pi-build`                     # build with default Dockerfile.pi
+  - `smol-pi-build -f <path>`            # build with a custom Dockerfile
+  - `smol-pi-build --generate-dockerfile` # write a copy of the default
+                                          # Dockerfile.pi to CWD for editing
+  - `smol-pi-build --image-tag <name>`   # override the docker/podman tag
+
+The `--generate-dockerfile` flow: copies the bundled default
+`Dockerfile.pi` to `./Dockerfile.pi` in the current directory (refusing
+to overwrite an existing one), so the user can `smol-pi-build -f
+./Dockerfile.pi` after customizing it. This lets users layer in their
+own tools, extensions, or pinned versions without forking the repo.
+
+The bundled default Dockerfile should live alongside the script (or be
+embedded via heredoc) so `smol-pi-build --generate-dockerfile` works
+without the original repo checkout.
+
+Effort: medium.
+Risk: low — mostly CLI plumbing.
+
+## 5. `curl <url> | sh` install pattern
+
+An install script that:
+  1. Downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` (or a
+     user-chosen prefix).
+  2. Downloads the default `Dockerfile.pi` to the data directory.
+  3. Checks for `smolvm`; if absent, prints the smolvm install command
+     (`curl -sSL https://smolmachines.com/install.sh | bash`) and exits
+     with instructions, rather than silently installing it (respect
+     user autonomy).
+  4. Does NOT build the image automatically — that requires docker/podman
+     and is a heavyweight step. Instead prints: "Run `smol-pi-build` to
+     build the sandbox image."
+
+Security note: `curl | sh` is convenient but inherently requires trust
+in the hosting domain. The script should be readable and ideally
+gpg-signed or served from a domain we control. We should also offer a
+"download then review" path (e.g. `curl -o install.sh <url> && less
+install.sh && sh install.sh`).
+
+Effort: small for the script itself; medium for hosting/publishing.
+Risk: low (script is trivial); the real work is CI/release hosting.
+
+---
+
+## Other ideas (not yet scoped)
+
+- **Persistent VM mode**: `smol-pi --persistent <name>` that uses
+  `smolvm machine create` + `start` + `exec` instead of `machine run`,
+  so installed packages survive across sessions. Useful for heavy
+  project work where you don't want to re-install tools every run.
+  Trade-off: weaker isolation (state persists, changes accumulate).
+
+- **SSH agent forwarding**: add `--ssh-agent` passthrough to smolvm so
+  `git clone` over SSH works inside the VM without exposing private
+  keys. Currently the user would need to add this flag manually.
+
+- **Secret injection**: support `--secret-env` / `--secret-file` passthrough
+  so provider API keys can be injected by reference without mounting
+  `~/.pi` RW. This would be the "more secure" alternative to the current
+  RW mount (see item: the RW ~/.pi mount is the weakest isolation point).
+
+- **Smolfile support**: a `Smolfile` in the project directory could
+  declare per-project overrides (extra mounts, allowed hosts, memory,
+  init commands). Smolvm already supports this via `-s Smolfile`.
+
+- **Image versioning**: tag the built image with a version/timestamp and
+  have `smol-pi` refuse to boot a stale image (or warn). Helps avoid
+  "works on my smol-pi from last month" confusion.
+
+- **macOS testing**: the whole design should work on macOS (Hypervisor.framework
+  instead of KVM), but it's untested. The DNS rewrite and CIDR filtering
+  should be identical; the main unknown is whether the `node:24-trixie-slim`
+  image boots cleanly under Apple Silicon's arm64 guest (the image is
+  multi-arch, but smolvm on macOS Apple Silicon boots arm64 Linux —
+  need to verify the node trixie-slim arm64 variant works).
+
+- **Kernel-level hardening**: investigate whether smolvm/libkrun exposes
+  any kernel lockdown or seccomp options for the guest, to further
+  restrict what a compromised agent could do inside the VM (beyond the
+  network filtering we already have).
