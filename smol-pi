@@ -15,6 +15,7 @@
 #   smol-pi --network-mode <mode> # set network egress mode (default: block-local)
 #   smol-pi --allow-host <host>   # allow egress to a specific host (block-all only)
 #   smol-pi --dns <server>        # override the DNS server (default: mode-dependent)
+#   smol-pi clean                 # remove stale smolvm cache (VM dirs + orphaned image archives)
 #   smol-pi --help                # show this help
 #
 # Prereqs: smolvm on PATH, and ./pi-sandbox.tar built via smol-pi-build.
@@ -72,6 +73,7 @@ Usage:
   smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
   smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
   smol-pi --dns <server>        Override DNS server (default: mode-dependent)
+  smol-pi clean                   Remove stale smolvm cache (frees disk space)
   smol-pi --help                  Show this help
 
 Network modes:
@@ -95,6 +97,12 @@ DNS: block-local forces 9.9.9.9; other modes use the system DNS injected
 Memory: 4 GiB (elastic via virtio-balloon).
 
 Image: $IMAGE
+
+clean: smolvm 1.1.1 leaves VM state dirs and image archives in
+       ~/.cache/smolvm/ after each ephemeral run (~1.4 GB per run).
+       'smol-pi clean' removes stale VM dirs and orphaned image archives
+       (keeping the archive for the current pi-sandbox.tar). This is also
+       done automatically before each VM boot.
 USAGE
 }
 
@@ -102,11 +110,78 @@ USAGE
 CMD="pi"
 SHELL_MODE=0
 
+# ---------------------------------------------------------------------------
+# Cleanup function: remove stale smolvm VM state dirs and orphaned image
+# archives. smolvm 1.1.1 doesn't clean up after ephemeral `machine run`,
+# leaving ~1.4 GB of qcow2 disks and logs per run.
+#
+# We remove:
+# - All VM state dirs in ~/.cache/smolvm/vms/ (these are ephemeral runs,
+#   none should be persistent)
+# - Orphaned image archives in ~/.cache/smolvm-image-archives/ that don't
+#   match the current pi-sandbox.tar hash
+# ---------------------------------------------------------------------------
+SMOLVM_CACHE="${SMOLVM_CACHE_DIR:-$(cd ~ && pwd)/.cache/smolvm}"
+SMOLVM_VMS_DIR="$SMOLVM_CACHE/vms"
+SMOLVM_ARCHIVES_DIR="$HOME/.cache/smolvm-image-archives"
+
+clean_smolvm_cache() {
+  removed_vms=0
+  removed_bytes=0
+
+  # Remove stale VM state dirs.
+  if [ -d "$SMOLVM_VMS_DIR" ]; then
+    for dir in "$SMOLVM_VMS_DIR"/*/; do
+      [ -d "$dir" ] || continue
+      size=$(du -sb "$dir" 2>/dev/null | cut -f1)
+      rm -rf "$dir"
+      removed_vms=$((removed_vms + 1))
+      removed_bytes=$((removed_bytes + ${size:-0}))
+    done
+  fi
+
+  # Remove orphaned image archives (keep the one matching current image).
+  current_hash=""
+  if [ -f "$IMAGE" ]; then
+    current_hash=$(sha256sum "$IMAGE" 2>/dev/null | cut -d' ' -f1)
+  fi
+
+  removed_archives=0
+  if [ -d "$SMOLVM_ARCHIVES_DIR" ]; then
+    for dir in "$SMOLVM_ARCHIVES_DIR"/*/; do
+      [ -d "$dir" ] || continue
+      hash=$(basename "$dir")
+      if [ -n "$current_hash" ] && [ "$hash" = "$current_hash" ]; then
+        continue
+      fi
+      size=$(du -sb "$dir" 2>/dev/null | cut -f1)
+      rm -rf "$dir"
+      removed_archives=$((removed_archives + 1))
+      removed_bytes=$((removed_bytes + ${size:-0}))
+    done
+  fi
+
+  # Print summary.
+  if [ "$removed_vms" -gt 0 ] || [ "$removed_archives" -gt 0 ]; then
+    mb=$((removed_bytes / 1048576))
+    echo "smol-pi: cleaned up $removed_vms VM dir(s), $removed_archives orphaned image archive(s) — freed ${mb} MB"
+  else
+    echo "smol-pi: nothing to clean"
+  fi
+}
+
 # Parse our own flags. Everything else is passed through to the command.
 while [ $# -gt 0 ]; do
   case "$1" in
     --help|-h)
       usage
+      exit 0
+      ;;
+    clean)
+      # Clean up stale smolvm cache and exit.
+      shift
+      # Consume any remaining args (e.g. --help) — but 'clean' is a leaf command.
+      clean_smolvm_cache
       exit 0
       ;;
     --shell)
@@ -330,7 +405,14 @@ fi
 # ---------------------------------------------------------------------------
 # Boot the VM.
 # ---------------------------------------------------------------------------
-exec smolvm machine run \
+
+# Clean up stale VM dirs from previous runs before booting.
+# smolvm 1.1.1 leaves VM state behind after ephemeral runs.
+# Run in background so it doesn't delay the boot.
+clean_smolvm_cache >/dev/null 2>&1 &
+
+# Run the VM (not exec — we need to clean up after it exits).
+smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
   -v "$CWD:/workspace" \
@@ -339,3 +421,9 @@ exec smolvm machine run \
   $ENV_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
+VM_EXIT=$?
+
+# Clean up the VM state dir left behind by this run.
+clean_smolvm_cache >/dev/null 2>&1
+
+exit $VM_EXIT

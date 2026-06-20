@@ -175,4 +175,25 @@ echo "==> Exporting to $TARBALL"
 rm -f "$SCRIPT_DIR/$TARBALL"
 $CT save "$IMAGE_TAG" -o "$SCRIPT_DIR/$TARBALL"
 
+# Clean up orphaned smolvm image archives from previous builds.
+# smolvm caches image tarballs content-addressed by hash in
+# ~/.cache/smolvm-image-archives/. Old builds leave orphaned copies.
+ARCHIVES_DIR="$HOME/.cache/smolvm-image-archives"
+if [ -d "$ARCHIVES_DIR" ]; then
+  current_hash=$(sha256sum "$SCRIPT_DIR/$TARBALL" 2>/dev/null | cut -d' ' -f1)
+  removed=0
+  for dir in "$ARCHIVES_DIR"/*/; do
+    [ -d "$dir" ] || continue
+    hash=$(basename "$dir")
+    if [ -n "$current_hash" ] && [ "$hash" = "$current_hash" ]; then
+      continue
+    fi
+    rm -rf "$dir"
+    removed=$((removed + 1))
+  done
+  if [ "$removed" -gt 0 ]; then
+    echo "==> Cleaned up $removed orphaned smolvm image archive(s)"
+  fi
+fi
+
 echo "==> Done. Run with: $SCRIPT_DIR/smol-pi"
