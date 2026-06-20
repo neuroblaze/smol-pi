@@ -24,7 +24,7 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Prerequisites
 
 - **smolvm** — the microVM runtime. Install: `curl -sSL https://smolmachines.com/install.sh | bash`
-- **podman or docker** — only needed to build the sandbox image (not to run it). podman is preferred (rootless, no daemon).
+- **podman or docker** — needed to build the sandbox image and run pi subcommands. podman is preferred (rootless, no daemon).
 - **Linux** with KVM (x86_64 or arm64). macOS support is expected but untested — see [TODO](TODO.md) item "macOS testing."
 
 ## Install
@@ -66,6 +66,20 @@ smol-pi --shell            # drop into a plain shell instead of pi
 ```
 
 Your current working directory is mounted at `/workspace`. `~/.pi` is mounted at `/root/.pi` read-write (so pi can persist config/auth across runs). Everything else inside the VM is ephemeral.
+
+## Pi subcommands
+
+Pi has subcommands that only manage the `~/.pi` directory — they don't invoke the agent and don't need a full VM:
+
+```sh
+smol-pi install <package>   # install a pi extension
+smol-pi remove <package>    # remove an extension
+smol-pi update              # update pi to the latest version
+smol-pi list                # list installed extensions
+smol-pi config              # open the resource configuration TUI
+```
+
+These run via podman or docker directly (no VM boot), so they're nearly instant. The `~/.pi` directory and current working directory are mounted into the container. With docker, the container runs as your host UID to avoid creating root-owned files in `~/.pi`.
 
 ## Network modes
 
@@ -109,6 +123,7 @@ smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
 smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
 smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
 smol-pi --dns <server>         Override DNS server (default: mode-dependent)
+smol-pi clean                   Remove stale smolvm cache (frees disk space)
 smol-pi --help                  Show this help
 ```
 
@@ -116,10 +131,59 @@ Memory: 4 GiB (elastic via virtio-balloon).
 
 ## How it works
 
-1. `smol-pi-build` creates an OCI image (`pi-sandbox.tar`) containing the pi agent and a custom entrypoint (`smol-pi-entrypoint`) that handles DNS configuration based on a `SMOL_PI_DNS` env var.
+1. `smol-pi-build` creates an OCI image (`pi-sandbox.tar`) containing the pi agent and a custom entrypoint (`smol-pi-entrypoint`) that handles DNS configuration and terminal sizing.
 2. `smol-pi` invokes `smolvm machine run` with the image, your project mounted at `/workspace`, `~/.pi` mounted at `/root/.pi`, and network flags corresponding to the chosen mode.
 3. smolvm boots a real Linux kernel in a microVM (KVM on Linux, Hypervisor.framework on macOS), with network egress filtered by a userspace proxy (passt).
 4. When the command exits, the VM is destroyed. Only the mounted directories persist.
+
+## Disk cleanup
+
+smolvm 1.1.1 doesn't clean up after ephemeral runs — each `machine run` leaves behind ~1.4 GB of VM state (qcow2 disks, logs) in `~/.cache/smolvm/vms/`, plus image archives in `~/.cache/smolvm-image-archives/`.
+
+smol-pi handles this automatically:
+
+- **Before each boot**: stale VM dirs from previous runs are cleaned up in the background.
+- **After each exit**: the VM dir from the run just completed is cleaned up.
+- **`smol-pi-build`**: orphaned image archives from previous builds are removed after a rebuild.
+
+To manually clean up (e.g. after a crash):
+
+```sh
+smol-pi clean
+```
+
+This removes all stale VM dirs and orphaned image archives, keeping only the archive matching the current `pi-sandbox.tar`.
+
+## Orphaned VM processes
+
+If the smol-pi script is killed with `SIGKILL` (OOM killer, `kill -9`), the trap can't fire and the smolvm process may stay running, consuming ~2 GB RSS. The next `smol-pi` run detects and kills any orphaned `smolvm-bin` process using the same image before booting. Normal exits and trappable signals (Ctrl+C, terminal close, SSH disconnect) are handled cleanly — the VM is terminated and disk state is cleaned up.
+
+## Security
+
+### What the agent can see
+
+The agent has full read-write access to two directories:
+
+- **`/workspace`** — your current working directory when you launch smol-pi. Anything in that directory is visible to the agent, including secrets files, `.env` files, private keys, etc. Be mindful of where you invoke smol-pi.
+- **`/root/.pi`** — pi's config and auth storage, mounted from `~/.pi` on the host. This contains pi's authentication tokens and any installed extensions.
+
+The agent cannot see your home directory, dotfiles, SSH keys, browser profile, or anything else outside these two mounts. The VM has its own kernel, so the agent cannot access host kernel features or devices.
+
+### Secrets isolation is out of scope
+
+The `~/.pi` directory contains API keys and auth tokens. We don't try to hide these from the agent — in this setup, true secrets isolation is theatre. The agent can always read environment variables (`printenv`), inspect `/proc/*/environ`, or exfil secrets through file reads. Any mechanism that gives the agent a secret to use also gives it the ability to leak that secret.
+
+If you need real secrets isolation, route API calls through a local proxy that injects credentials out-of-band, so the agent never sees the key material. This is a user/infrastructure concern, not something smol-pi can solve inside the sandbox.
+
+### Network egress
+
+Network egress is the main attack surface. The default `block-local` mode allows public internet (so the agent can reach LLM APIs, package registries, etc.) but blocks private networks (your LAN, RFC1918, link-local, CGNAT, ULA). This prevents a compromised agent from reaching internal services on your network.
+
+For maximum lockdown, use `block-all` with `--allow-host` to punch holes only to specific hosts (e.g. your LLM API endpoint).
+
+### Building safely
+
+The `--no-cache` build ensures you get fresh base images, but you should still rebuild periodically to pick up security updates in the base OS and pi itself.
 
 ## Files
 
@@ -132,12 +196,8 @@ Memory: 4 GiB (elastic via virtio-balloon).
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |
 | `TODO` | Improvement ideas and findings |
 
-## Security notes
-
-- `~/.pi` is mounted read-write. This is necessary for pi to persist config and auth across runs, but it means a compromised agent could modify or exfiltrate pi's credentials. The `block-all` mode mitigates network exfiltration. A `--secret-env` / `--secret-file` passthrough is planned (see [TODO](TODO)).
-- The VM uses its own kernel, so the agent cannot access host kernel features or devices. Network egress is the main attack surface, which is why the default mode blocks private networks.
-- The `--no-cache` build ensures you get fresh base images, but you should still rebuild periodically to pick up security updates in the base OS and pi itself.
-
 ## License
 
-MIT
+MIT-0 (public domain equivalent). See [LICENSE](LICENSE).
+
+Copyright (c) 2026 Peter Kazakoff
