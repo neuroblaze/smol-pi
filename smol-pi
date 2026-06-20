@@ -412,7 +412,6 @@ fi
 # our pi-sandbox.tar image.
 if [ -n "$(command -v pgrep)" ]; then
   for pid in $(pgrep -x smolvm-bin 2>/dev/null); do
-    # Check if this process is using our image.
     cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')
     case "$cmdline" in
       *"$IMAGE"*) kill -TERM "$pid" 2>/dev/null ;;
@@ -424,11 +423,18 @@ fi
 # smolvm 1.1.1 leaves VM state behind after ephemeral runs.
 clean_smolvm_cache >/dev/null 2>&1 &
 
-# Boot the VM with exec so it gets direct TTY control (interactive input,
-# terminal resize, signal delivery). The orphaned-process cleanup above
-# handles the crash case instead of a trap (which would require
-# backgrounding and break the TTY).
-exec smolvm machine run \
+# Run the VM as a foreground child (not exec, not backgrounded).
+# - TTY works: the child stays in our process group and inherits the
+#   controlling terminal, so interactive input and terminal resize work.
+# - Signals work: SIGINT/SIGHUP go to the entire foreground process group,
+#   so both the shell and smolvm receive them — smolvm dies, our EXIT trap
+#   fires, cleanup runs.
+# - After normal exit, the EXIT trap runs clean_smolvm_cache.
+# - If the shell is SIGKILLed (OOM, kill -9), the trap can't fire — but
+#   the orphan cleanup at the top of the next run handles that case.
+trap 'clean_smolvm_cache >/dev/null 2>&1' EXIT
+
+smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
   -v "$CWD:/workspace" \
@@ -437,3 +443,8 @@ exec smolvm machine run \
   $ENV_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
+VM_EXIT=$?
+
+# Explicitly run cleanup and exit (the EXIT trap also fires, but this
+# ensures the exit code is propagated correctly).
+exit $VM_EXIT
