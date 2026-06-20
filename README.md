@@ -59,13 +59,13 @@ The image is based on `node:24-trixie-slim` and includes:
 
 ### Custom images
 
-You can build a custom image with additional packages, extensions, or tools. Start by generating the default Dockerfile to edit:
+You can build a custom image with additional packages or tools. Start by generating the default Dockerfile to edit:
 
 ```sh
 smol-pi-build --generate-dockerfile    # writes Dockerfile.pi to CWD
 ```
 
-Then modify it to suit your needs. For example, to add Python and a pi extension:
+Then modify it to suit your needs. For example, to add Python and Rust:
 
 ```dockerfile
 FROM node:24-trixie-slim
@@ -83,8 +83,9 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
-# Install a pi extension into the image
-RUN pi install @anthropic/plan-mode
+# Install Rust via rustup
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
 
 RUN printf '%s\n' \
     '#!/bin/sh' \
@@ -123,6 +124,16 @@ smol-pi-build -f ./Dockerfile.custom --image-tag pi-custom
 ```
 
 The image tag only affects the container image name during build — `smol-pi` always loads `pi-sandbox.tar` regardless of the tag used to build it.
+
+#### Installing pi extensions
+
+Pi extensions (via `pi install`) are stored in `~/.pi/agent/`, which is a bind mount from the host — not baked into the image. So installing extensions in the Dockerfile won't work; they'll be shadowed by the mount at runtime. Install extensions after the image is built instead:
+
+```sh
+smol-pi install @anthropic/plan-mode
+```
+
+This runs via the podman/docker fast path (no VM boot) and writes directly to `~/.pi` on the host, where the VM will pick it up on the next run.
 
 ## Run
 
