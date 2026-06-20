@@ -167,7 +167,7 @@ fi
 # Build and export.
 # ---------------------------------------------------------------------------
 echo "==> Building $IMAGE_TAG with $CT (Dockerfile: $BUILD_FILE)"
-$CT build -t "$IMAGE_TAG" -f "$BUILD_FILE" "$BUILD_CONTEXT"
+$CT build --no-cache -t "$IMAGE_TAG" -f "$BUILD_FILE" "$BUILD_CONTEXT"
 
 echo "==> Exporting to $TARBALL"
 # Remove any existing tarball — podman save refuses to overwrite.
