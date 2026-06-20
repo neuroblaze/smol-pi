@@ -3,7 +3,7 @@ FROM node:24-trixie-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash ca-certificates coreutils curl file findutils git gnupg \
-       iproute2 iputils-ping iputils-tracepath jq less \
+       iproute2 jq fd-find less \
        make openssh-client procps ripgrep rsync \
        sudo tar unzip vim xz-utils zstd \
   && rm -rf /var/lib/apt/lists/*
