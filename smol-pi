@@ -412,6 +412,20 @@ fi
 clean_smolvm_cache >/dev/null 2>&1 &
 
 # Run the VM (not exec — we need to clean up after it exits).
+# Use a trap to ensure the smolvm process is killed on any exit (SIGINT,
+# SIGTERM, SSH disconnect, terminal crash, etc.). Without this, the VM
+# stays running in memory — each consuming ~2 GB RSS — until the host reboots.
+VM_PID=""
+kill_vm() {
+  if [ -n "$VM_PID" ] && kill -0 "$VM_PID" 2>/dev/null; then
+    kill -TERM "$VM_PID" 2>/dev/null
+    # Give it a moment, then force kill if still alive.
+    sleep 0.5
+    kill -KILL "$VM_PID" 2>/dev/null
+  fi
+}
+trap kill_vm EXIT INT TERM HUP
+
 smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
@@ -420,8 +434,13 @@ smolvm machine run \
   $NET_FLAGS \
   $ENV_FLAGS \
   -it \
-  -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
+  -- /usr/local/bin/smol-pi-entrypoint $CMD "$@" &
+VM_PID=$!
+
+# Wait for the VM process to exit.
+wait $VM_PID 2>/dev/null
 VM_EXIT=$?
+VM_PID=""
 
 # Clean up the VM state dir left behind by this run.
 clean_smolvm_cache >/dev/null 2>&1
