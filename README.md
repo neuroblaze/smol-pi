@@ -152,12 +152,13 @@ Pi has subcommands that only manage the `~/.pi` directory — they don't invoke 
 ```sh
 smol-pi install <package>   # install a pi extension
 smol-pi remove <package>    # remove an extension
-smol-pi update              # update pi to the latest version
 smol-pi list                # list installed extensions
 smol-pi config              # open the resource configuration TUI
 ```
 
 These run via podman or docker directly (no VM boot), so they're nearly instant. The `~/.pi` directory and current working directory are mounted into the container. With docker, the container runs as your host UID to avoid creating root-owned files in `~/.pi`.
+
+Note that while `smol-pi update` will run, changes will not persist, since they will be made in the ephemeral VM. If you want to update pi to the latest version, run `smol-pi-build` to rebuild the container.
 
 ## Network modes
 
