@@ -45,7 +45,17 @@ BLOCK_INTERNET_CIDRS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 127.0.0.0/8 169.25
 # Resolve paths and parse options.
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-IMAGE="$SCRIPT_DIR/pi-sandbox.tar"
+
+# Resolve the data directory: in installed mode, data files live in
+# $PREFIX/etc/smol-pi (i.e. $SCRIPT_DIR/../etc/smol-pi). In dev/repo mode,
+# they live next to this script in $SCRIPT_DIR. Pick whichever exists.
+DATA_DIR=""
+if [ -d "$SCRIPT_DIR/../etc/smol-pi" ]; then
+  DATA_DIR="$(cd "$SCRIPT_DIR/../etc/smol-pi" && pwd)"
+elif [ -d "$SCRIPT_DIR" ]; then
+  DATA_DIR="$(cd "$SCRIPT_DIR" && pwd)"
+fi
+IMAGE="$DATA_DIR/pi-sandbox.tar"
 
 # Default .pi directory: ~/.pi (resolved to an absolute path).
 PI_DIR="$(cd ~ && pwd)/.pi"
@@ -605,11 +615,7 @@ SSH_VOL=""
 # port is not exposed externally. Inside the VM, dropbear must listen on
 # 0.0.0.0 (not 127.0.0.1) because smolvm's forward connects from the VM's
 # gateway IP (100.96.0.1), not localhost.
-PTY_HELPER="$SCRIPT_DIR/scripts/smol-pi-pty.py"
-if [ ! -f "$PTY_HELPER" ]; then
-  # Also check the install prefix (~/.local/bin/scripts/)
-  PTY_HELPER="$(dirname "$SCRIPT_DIR")/scripts/smol-pi-pty.py"
-fi
+PTY_HELPER="$DATA_DIR/scripts/smol-pi-pty.py"
 if [ ! -f "$PTY_HELPER" ]; then
   echo "smol-pi: cannot find scripts/smol-pi-pty.py" >&2
   echo "smol-pi: this helper is required for the ssh transport." >&2

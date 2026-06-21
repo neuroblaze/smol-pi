@@ -10,7 +10,7 @@
 #   sh install.sh
 #
 # Options:
-#   --prefix <dir>    Install to <dir>/bin (default: ~/.local)
+#   --prefix <dir>    Install to <dir>/bin and <dir>/etc (default: ~/.local)
 
 set -e
 
@@ -37,8 +37,9 @@ BANNER
 # ---------------------------------------------------------------------------
 PREFIX="${HOME}/.local"
 BASE_URL="https://raw.githubusercontent.com/neuroblaze/smol-pi/main"
-FILES="smol-pi smol-pi-build Dockerfile.pi"
-SCRIPT_FILES="scripts/smol-pi-pty.py"
+# Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
+BIN_FILES="smol-pi smol-pi-build"
+ETC_FILES="Dockerfile.pi scripts/smol-pi-pty.py"
 
 # ---------------------------------------------------------------------------
 # Parse options
@@ -47,7 +48,8 @@ usage() {
   cat <<USAGE
 Usage: sh install.sh [--prefix <dir>]
 
-  --prefix <dir>    Install scripts to <dir>/bin (default: ~/.local)
+  --prefix <dir>    Install executables to <dir>/bin and data files to
+                    <dir>/etc/smol-pi (default: ~/.local)
   --help            Show this help
 USAGE
   exit 0
@@ -89,28 +91,30 @@ case "$PREFIX" in
 esac
 
 BINDIR="$PREFIX/bin"
+ETCDIR="$PREFIX/etc/smol-pi"
 
 print_banner
 
-echo "==> Installing to $BINDIR"
-mkdir -p "$BINDIR/scripts"
+echo "==> Installing executables to $BINDIR"
+echo "==> Installing data files to $ETCDIR"
+mkdir -p "$BINDIR" "$ETCDIR/scripts"
 
 # ---------------------------------------------------------------------------
 # Download files
 # ---------------------------------------------------------------------------
-for f in $FILES; do
+for f in $BIN_FILES; do
   echo "    downloading $f"
   curl -sSfL "$BASE_URL/$f" -o "$BINDIR/$f"
 done
 
-for f in $SCRIPT_FILES; do
+for f in $ETC_FILES; do
   echo "    downloading $f"
-  curl -sSfL "$BASE_URL/$f" -o "$BINDIR/$f"
+  curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"
 done
 
-chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build" "$BINDIR/scripts/smol-pi-pty.py"
+chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build" "$ETCDIR/scripts/smol-pi-pty.py"
 
-echo "==> Done. Files installed to $BINDIR"
+echo "==> Done."
 
 # ---------------------------------------------------------------------------
 # Check PATH

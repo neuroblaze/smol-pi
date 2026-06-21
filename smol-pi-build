@@ -14,6 +14,20 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
+# Resolve the data directory: in installed mode, data files live in
+# $PREFIX/etc/smol-pi (i.e. $SCRIPT_DIR/../etc/smol-pi). In dev/repo mode,
+# they live next to this script in $SCRIPT_DIR. Pick whichever exists.
+DATA_DIR=""
+for d in "$SCRIPT_DIR/../etc/smol-pi" "$SCRIPT_DIR"; do
+  if [ -d "$d" ]; then
+    DATA_DIR="$(cd "$d" && pwd)"
+    break
+  fi
+done
+if [ -z "$DATA_DIR" ]; then
+  DATA_DIR="$SCRIPT_DIR"
+fi
+
 IMAGE_TAG="pi-sandbox"
 TARBALL="pi-sandbox.tar"
 DOCKERFILE=""
@@ -30,7 +44,7 @@ Usage:
   smol-pi-build --image-tag <name>    Override the image tag (default: pi-sandbox)
 
 The build uses podman if available, otherwise docker.
-The output tar is written next to this script as $TARBALL.
+The output tar is written to the smol-pi data directory as $TARBALL.
 USAGE
 }
 
@@ -187,14 +201,14 @@ if [ -n "$DOCKERFILE" ]; then
   BUILD_CONTEXT="$(dirname "$DOCKERFILE")"
   BUILD_FILE="$DOCKERFILE"
 else
-  # Default: the bundled Dockerfile.pi next to this script.
-  BUILD_FILE="$SCRIPT_DIR/Dockerfile.pi"
+  # Default: the bundled Dockerfile.pi in the data directory.
+  BUILD_FILE="$DATA_DIR/Dockerfile.pi"
   if [ ! -f "$BUILD_FILE" ]; then
     echo "smol-pi-build: default Dockerfile not found at $BUILD_FILE" >&2
     echo "smol-pi-build: generate one with: smol-pi-build --generate-dockerfile" >&2
     exit 1
   fi
-  BUILD_CONTEXT="$SCRIPT_DIR"
+  BUILD_CONTEXT="$DATA_DIR"
 fi
 
 # ---------------------------------------------------------------------------
@@ -205,15 +219,15 @@ $CT build --no-cache -t "$IMAGE_TAG" -f "$BUILD_FILE" "$BUILD_CONTEXT"
 
 echo "==> Exporting to $TARBALL"
 # Remove any existing tarball — podman save refuses to overwrite.
-rm -f "$SCRIPT_DIR/$TARBALL"
-$CT save "$IMAGE_TAG" -o "$SCRIPT_DIR/$TARBALL"
+rm -f "$DATA_DIR/$TARBALL"
+$CT save "$IMAGE_TAG" -o "$DATA_DIR/$TARBALL"
 
 # Clean up orphaned smolvm image archives from previous builds.
 # smolvm caches image tarballs content-addressed by hash in
 # ~/.cache/smolvm-image-archives/. Old builds leave orphaned copies.
 ARCHIVES_DIR="$HOME/.cache/smolvm-image-archives"
 if [ -d "$ARCHIVES_DIR" ]; then
-  current_hash=$(sha256sum "$SCRIPT_DIR/$TARBALL" 2>/dev/null | cut -d' ' -f1)
+  current_hash=$(sha256sum "$DATA_DIR/$TARBALL" 2>/dev/null | cut -d' ' -f1)
   removed=0
   for dir in "$ARCHIVES_DIR"/*/; do
     [ -d "$dir" ] || continue
