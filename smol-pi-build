@@ -110,6 +110,7 @@ RUN apt-get update \
        bash ca-certificates coreutils curl file findutils git gnupg \
        iproute2 iputils-ping iputils-tracepath jq less \
        make openssh-client procps ripgrep rsync \
+       dropbear \
        sudo tar unzip vim xz-utils zstd \
   && rm -rf /var/lib/apt/lists/*
 
@@ -117,21 +118,49 @@ RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
+# Generate dropbear host keys at build time so the entrypoint doesn't
+# pay that cost on every boot. The host key is per-image-build (not
+# per-run), which is fine — smol-pi disables host key checking because
+# it only ever connects to 127.0.0.1.
+RUN mkdir -p /etc/dropbear \
+  && dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key >/dev/null 2>&1 \
+  && dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key >/dev/null 2>&1 || true
+
 RUN printf '%s\n' \
     '#!/bin/sh' \
-    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
-    '# then exec.' \
-    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
-    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
-    '# This only affects the initial size — terminal resize signals still work.' \
+    '# smol-pi entrypoint:' \
+    '#   1. Optionally rewrite DNS.' \
+    '#   2. Resize the PTY to match host COLUMNS/LINES (only useful on the' \
+    '#      direct-smolvm-PTY path; the ssh path inherits size from the client).' \
+    '#   3. Ensure /root/.ssh/authorized_keys exists (mounted from host).' \
+    '#   4. Transport dispatch:' \
+    '#      - SMOL_PI_TRANSPORT=ssh: start dropbear in the background, then' \
+    '#        block forever (tail -f /dev/null). smol-pi sshes in and runs the' \
+    '#        command there, getting a clean PTY. When smol-pi tears down the' \
+    '#        VM, this PID 1 dies and the VM shuts down.' \
+    '#      - otherwise (direct PTY): exec the command as PID 1.' \
     'if [ -n "$SMOL_PI_DNS" ]; then' \
     '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
     'fi' \
     'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
     '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
     'fi' \
+    'mkdir -p /root/.ssh' \
+    'chmod 700 /root/.ssh' \
+    '# smol-pi writes the ephemeral pubkey to ~/.pi/.smol-pi-authorized_keys' \
+    '# (inside the already-mounted /root/.pi directory — smolvm limits' \
+    '# virtio-fs mounts to 2, so we cannot add a 3rd mount for the key).' \
+    '# Copy it to authorized_keys so dropbear can authorize the host client.' \
+    'if [ -f /root/.pi/.smol-pi-authorized_keys ]; then' \
+    '  cp /root/.pi/.smol-pi-authorized_keys /root/.ssh/authorized_keys' \
+    '  chmod 600 /root/.ssh/authorized_keys' \
+    'fi' \
     'cd /workspace 2>/dev/null || true' \
-    'exec "$@"' \
+    'if [ "$SMOL_PI_TRANSPORT" = "ssh" ]; then' \
+    '  dropbear -F -R -E -s -g -p 0.0.0.0:22 >/var/log/dropbear.log 2>&1' \
+    'else' \
+    '  exec "$@"' \
+    'fi' \
   > /usr/local/bin/smol-pi-entrypoint \
   && chmod +x /usr/local/bin/smol-pi-entrypoint
 
