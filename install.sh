@@ -38,6 +38,7 @@ BANNER
 PREFIX="${HOME}/.local"
 BASE_URL="https://raw.githubusercontent.com/neuroblaze/smol-pi/main"
 FILES="smol-pi smol-pi-build Dockerfile.pi"
+SCRIPT_FILES="scripts/smol-pi-pty.py"
 
 # ---------------------------------------------------------------------------
 # Parse options
@@ -92,7 +93,7 @@ BINDIR="$PREFIX/bin"
 print_banner
 
 echo "==> Installing to $BINDIR"
-mkdir -p "$BINDIR"
+mkdir -p "$BINDIR/scripts"
 
 # ---------------------------------------------------------------------------
 # Download files
@@ -102,7 +103,12 @@ for f in $FILES; do
   curl -sSfL "$BASE_URL/$f" -o "$BINDIR/$f"
 done
 
-chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build"
+for f in $SCRIPT_FILES; do
+  echo "    downloading $f"
+  curl -sSfL "$BASE_URL/$f" -o "$BINDIR/$f"
+done
+
+chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build" "$BINDIR/scripts/smol-pi-pty.py"
 
 echo "==> Done. Files installed to $BINDIR"
 
