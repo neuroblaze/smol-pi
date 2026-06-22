@@ -85,17 +85,8 @@ Usage:
   smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
   smol-pi --dns <server>        Override DNS server (default: mode-dependent)
   smol-pi --mem <MiB>           VM memory in MiB (default: 2048)
-  smol-pi --ssh-port <port>     Override the host port for the ssh transport
-  smol-pi --no-ssh              Disable the ssh transport; use smolvm's PTY directly
-                                (reproduces the Shift+Enter bug — for debugging)
   smol-pi clean                   Remove stale smolvm cache (frees disk space)
   smol-pi --help                  Show this help
-
-Transport:
-  By default smol-pi boots the VM, starts a dropbear ssh server inside it,
-  and connects over ssh to get a clean PTY end-to-end. This fixes keybinding
-  issues (Shift+Enter, Alt+Enter) that break when smolvm's PTY collapses
-  modifier+Enter sequences. Use --no-ssh to fall back to the direct PTY.
 
 Network modes:
   block-local     Allow public internet, block private networks (default).
@@ -130,11 +121,6 @@ USAGE
 # Default command if no args are given: pi interactively.
 CMD="pi"
 SHELL_MODE=0
-
-# SSH transport on by default. --no-ssh falls back to the direct smolvm PTY
-# (useful for debugging the original Shift+Enter issue).
-SSH_TRANSPORT=1
-SSH_PORT=""
 
 # ---------------------------------------------------------------------------
 # Cleanup function: remove stale smolvm VM state dirs and orphaned image
@@ -274,26 +260,6 @@ while [ $# -gt 0 ]; do
     --mem=*)
       MEM="${1#--mem=}"
       shift
-      ;;
-    --ssh-port)
-      if [ $# -lt 2 ]; then
-        echo "smol-pi: --ssh-port requires an argument" >&2
-        exit 2
-      fi
-      SSH_PORT="$2"
-      shift 2
-      ;;
-    --ssh-port=*)
-      SSH_PORT="${1#--ssh-port=}"
-      shift
-      ;;
-    --no-ssh)
-      shift
-      SSH_TRANSPORT=0
-      ;;
-    --ssh)
-      shift
-      SSH_TRANSPORT=1
       ;;
     *)
       # First non-smol-pi arg: stop parsing, pass the rest through.
@@ -502,250 +468,28 @@ fi
 # smolvm 1.1.1 leaves VM state behind after ephemeral runs.
 clean_smolvm_cache >/dev/null 2>&1 &
 
-# Scratch directory for the ephemeral ssh keypair (ssh transport only).
-# Wiped in the EXIT trap. Declared here so the trap can reference it even
-# if we exit before assigning it.
-SSH_TMPDIR=""
+# Run the VM as a foreground child (not exec, not backgrounded).
+# - TTY works: the child stays in our process group and inherits the
+#   controlling terminal, so interactive input and terminal resize work.
+# - Signals work: SIGINT/SIGHUP go to the entire foreground process group,
+#   so both the shell and smolvm receive them — smolvm dies, our EXIT trap
+#   fires, cleanup runs.
+# - After normal exit, the EXIT trap runs clean_smolvm_cache.
+# - If the shell is SIGKILLed (OOM, kill -9), the trap can't fire — but
+#   the orphan cleanup at the top of the next run handles that case.
+trap 'clean_smolvm_cache >/dev/null 2>&1' EXIT
 
-# Cleanup: wipe the ephemeral keypair, kill any smolvm VM we started, and
-# run the normal smolvm-cache cleanup. SIGHUP/SIGINT propagate to the
-# foreground process group (which includes smolvm when running directly);
-# for the ssh path we track the VM PID and kill it explicitly.
-cleanup() {
-  if [ -n "$SSH_TMPDIR" ] && [ -d "$SSH_TMPDIR" ]; then
-    rm -rf "$SSH_TMPDIR"
-  fi
-  if [ -n "$SSH_PUBKEY_FILE" ] && [ -f "$SSH_PUBKEY_FILE" ]; then
-    rm -f "$SSH_PUBKEY_FILE"
-  fi
-  if [ -n "$VM_PID" ] && kill -0 "$VM_PID" 2>/dev/null; then
-    kill -TERM "$VM_PID" 2>/dev/null
-  fi
-  clean_smolvm_cache >/dev/null 2>&1
-}
-trap 'cleanup' EXIT
-trap 'cleanup; exit 130' INT TERM
+smolvm machine run \
+  --mem "$MEM" \
+  --image "$IMAGE" \
+  -v "$CWD:/workspace" \
+  -v "$PI_DIR:/root/.pi" \
+  $NET_FLAGS \
+  $ENV_FLAGS \
+  -it \
+  -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
+VM_EXIT=$?
 
-# ---------------------------------------------------------------------------
-# Direct PTY path (--no-ssh): the original behavior. smolvm allocates the
-# PTY and pi runs as PID 1 inside the VM. Reproduces the Shift+Enter bug
-# but is a useful debugging fallback.
-# ---------------------------------------------------------------------------
-if [ "$SSH_TRANSPORT" -eq 0 ]; then
-  smolvm machine run \
-    --mem "$MEM" \
-    --image "$IMAGE" \
-    -v "$CWD:/workspace" \
-    -v "$PI_DIR:/root/.pi" \
-    $NET_FLAGS \
-    $ENV_FLAGS \
-    -it \
-    -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
-  exit $?
-fi
-
-# ---------------------------------------------------------------------------
-# SSH transport (default): boots the VM with dropbear as the long-running
-# PID 1, then connects over ssh to get a clean PTY end-to-end. Fixes the
-# Shift+Enter / Alt+Enter keybinding issues caused by smolvm's PTY
-# collapsing modifier+Enter sequences.
-# ---------------------------------------------------------------------------
-
-# Prereqs for the ssh path.
-if ! command -v ssh >/dev/null 2>&1; then
-  echo "smol-pi: ssh not found on PATH (needed for the ssh transport)." >&2
-  echo "smol-pi: install openssh-client, or use --no-ssh for the direct PTY path." >&2
-  exit 1
-fi
-if ! command -v ssh-keygen >/dev/null 2>&1; then
-  echo "smol-pi: ssh-keygen not found on PATH (needed for the ssh transport)." >&2
-  echo "smol-pi: install openssh-client, or use --no-ssh for the direct PTY path." >&2
-  exit 1
-fi
-
-# Generate an ephemeral ed25519 keypair in a private tmpdir.
-SSH_TMPDIR=$(mktemp -d "${TMPDIR:-/tmp}/smol-pi-ssh.XXXXXX") || {
-  echo "smol-pi: failed to create tmpdir for ssh keypair" >&2
-  exit 1
-}
-SSH_KEY="$SSH_TMPDIR/id_ed25519"
-ssh-keygen -q -t ed25519 -N '' -C "smol-pi-ephemeral" -f "$SSH_KEY" >/dev/null 2>&1 || {
-  echo "smol-pi: ssh-keygen failed" >&2
-  exit 1
-}
-
-# Pick a host port for the forward. smolvm rejects :0, so we either use
-# the user-supplied port or let the OS pick one by binding a socket and
-# closing it before handing it to smolvm (small TOCTOU window, but smolvm
-# will fail loudly if it loses the race).
-if [ -z "$SSH_PORT" ]; then
-  SSH_PORT=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null) || {
-    echo "smol-pi: failed to pick a free host port for ssh" >&2
-    echo "smol-pi: specify one with --ssh-port <port>" >&2
-    exit 1
-  }
-fi
-
-# Build the env flags for the ssh transport. Tell the entrypoint to start
-# dropbear instead of exec'ing the command directly.
-SSH_ENV_FLAGS="$ENV_FLAGS -e SMOL_PI_TRANSPORT=ssh"
-
-# Pass the ephemeral pubkey to the VM. We cannot use a 3rd virtio-fs
-# mount (smolvm limits to 2) and the pubkey contains spaces so it
-# can't go through smolvm's -e flag (word splitting). Instead, write
-# it to a file inside the already-mounted ~/.pi directory.
-SSH_PUBKEY_FILE="$PI_DIR/.smol-pi-authorized_keys"
-cat "$SSH_KEY.pub" > "$SSH_PUBKEY_FILE"
-chmod 644 "$SSH_PUBKEY_FILE"
-
-# No extra volume mount needed — the pubkey travels via ~/.pi.
-SSH_VOL=""
-
-# Boot the VM in the background. The entrypoint starts dropbear (with -F,
-# foreground) and blocks — dropbear is PID 1's long-running process.
-#
-# smolvm requires -t (PTY) to actually execute the VM command and apply
-# volume mounts. Without -t, the command never runs. But we need the VM
-# in the background so we can poll for SSH readiness. We solve this with
-# smol-pi-pty.py — a tiny Python helper that allocates a pseudo-TTY,
-# runs smolvm attached to it, and captures output to stderr. The helper
-# runs in the background; we track its PID for cleanup.
-#
-# smolvm's port forward (-p) binds to 127.0.0.1 on the host, so the SSH
-# port is not exposed externally. Inside the VM, dropbear must listen on
-# 0.0.0.0 (not 127.0.0.1) because smolvm's forward connects from the VM's
-# gateway IP (100.96.0.1), not localhost.
-PTY_HELPER="$DATA_DIR/scripts/smol-pi-pty.py"
-if [ ! -f "$PTY_HELPER" ]; then
-  echo "smol-pi: cannot find scripts/smol-pi-pty.py" >&2
-  echo "smol-pi: this helper is required for the ssh transport." >&2
-  echo "smol-pi: re-run install.sh, or use --no-ssh for the direct PTY path." >&2
-  exit 1
-fi
-
-# Retry the VM boot on transient failures. krun_start_enter returns -22
-# (EINVAL/ENOMEM) when there isn't enough free RAM at the exact moment
-# smolvm tries to start. This can happen due to background disk cache
-# pressure or other transient memory spikes. We retry up to 3 times,
-# halving MEM each time.
-boot_vm_ssh() {
-  python3 "$PTY_HELPER" \
-    smolvm machine run \
-      --mem "$MEM" \
-      --image "$IMAGE" \
-      -v "$CWD:/workspace" \
-      -v "$PI_DIR:/root/.pi" \
-      $SSH_VOL \
-      $NET_FLAGS \
-      $SSH_ENV_FLAGS \
-      -p "$SSH_PORT:22" \
-      -it \
-      -- /usr/local/bin/smol-pi-entrypoint >/tmp/smol-pi-vm.log 2>&1 &
-  VM_PID=$!
-}
-
-boot_vm_ssh
-# Wait for the VM to either start booting or fail. smolvm outputs to the
-# PTY which is captured to /tmp/smol-pi-vm.log by the PTY helper. On
-# failure, the error (krun_start_enter -22) appears in the log within
-# ~6-10s. We poll for up to 20s total, retrying with halved memory on
-# ENOMEM errors.
-retry_start=0
-while [ "$retry_start" -lt 20 ]; do
-  retry_start=$((retry_start + 1))
-  sleep 1
-  if grep -q "krun_start_enter returned" /tmp/smol-pi-vm.log 2>/dev/null; then
-    # VM failed with ENOMEM — retry with less memory.
-    echo "smol-pi: VM failed to start (ENOMEM with ${MEM} MB), retrying with less…" >&2
-    kill -9 "$VM_PID" 2>/dev/null
-    wait "$VM_PID" 2>/dev/null
-    MEM=$((MEM / 2))
-    if [ "$MEM" -lt 512 ]; then
-      echo "smol-pi: cannot boot VM even with 512 MB" >&2
-      cat /tmp/smol-pi-vm.log >&2
-      exit 1
-    fi
-    : > /tmp/smol-pi-vm.log
-    boot_vm_ssh
-    retry_start=0
-  elif ! kill -0 "$VM_PID" 2>/dev/null; then
-    # Process died — check if it was -22 or something else.
-    if grep -q "krun_start_enter returned" /tmp/smol-pi-vm.log 2>/dev/null; then
-      echo "smol-pi: VM failed to start (ENOMEM with ${MEM} MB), retrying with less…" >&2
-      MEM=$((MEM / 2))
-      if [ "$MEM" -lt 512 ]; then
-        echo "smol-pi: cannot boot VM even with 512 MB" >&2
-        cat /tmp/smol-pi-vm.log >&2
-        exit 1
-      fi
-      : > /tmp/smol-pi-vm.log
-      boot_vm_ssh
-      retry_start=0
-    else
-      echo "smol-pi: VM exited before ssh came up. Last VM log lines:" >&2
-      tail -n 20 /tmp/smol-pi-vm.log >&2
-      exit 1
-    fi
-  fi
-done
-
-# Wait for ssh to come up. The VM cold start is ~30-45s (Debian-slim is
-# not tiny), so we poll for up to 120s. smolvm boots the kernel, imports
-# the image, and the entrypoint starts dropbear — only then is :22
-# reachable through the port forward.
-echo "smol-pi: booting VM (this can take ~30s on a cold start)…"
-SSH_READY=0
-for i in $(seq 1 120); do
-  # If the VM died before ssh came up, surface its log and bail.
-  if ! kill -0 "$VM_PID" 2>/dev/null; then
-    echo "smol-pi: VM exited before ssh came up. Last VM log lines:" >&2
-    tail -n 20 /tmp/smol-pi-vm.log >&2
-    exit 1
-  fi
-  if ssh -p "$SSH_PORT" \
-        -i "$SSH_KEY" \
-        -o StrictHostKeyChecking=no \
-        -o UserKnownHostsFile=/dev/null \
-        -o BatchMode=yes \
-        -o ConnectTimeout=1 \
-        root@127.0.0.1 true 2>/dev/null; then
-    SSH_READY=1
-    break
-  fi
-  sleep 1
-done
-
-if [ "$SSH_READY" -ne 1 ]; then
-  echo "smol-pi: ssh transport did not come up on port $SSH_PORT after 120s." >&2
-  echo "smol-pi: last VM log lines:" >&2
-  tail -n 20 /tmp/smol-pi-vm.log >&2
-  echo "smol-pi: try --ssh-port <port> to pick a different port," >&2
-  echo "smol-pi: or --no-ssh to fall back to the direct smolvm PTY." >&2
-  exit 1
-fi
-
-# Connect over ssh with a forced PTY (-tt). Host key checking is off
-# because the host key is per-image-build and we only connect to
-# 127.0.0.1. The exit code from ssh is the exit code of the remote
-# command, which we propagate.
-#
-# Build the remote command. We need to cd to /workspace and exec the
-# command. For shell mode, CMD is /bin/sh and the remaining args are
-# passed through (e.g. -c "command"). For pi mode, CMD is pi and any
-# args are pi flags. We single-quote each argument to survive the ssh
-# round-trip; the remote shell will strip the quotes.
-REMOTE_CMD='cd /workspace 2>/dev/null; exec '"$CMD"
-for arg in "$@"; do
-  REMOTE_CMD="$REMOTE_CMD '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'"
-done
-
-ssh -p "$SSH_PORT" \
-  -i "$SSH_KEY" \
-  -o StrictHostKeyChecking=no \
-  -o UserKnownHostsFile=/dev/null \
-  -t \
-  root@127.0.0.1 \
-  -- "$REMOTE_CMD"
-SSH_EXIT=$?
-
-exit $SSH_EXIT
+# Explicitly run cleanup and exit (the EXIT trap also fires, but this
+# ensures the exit code is propagated correctly).
+exit $VM_EXIT

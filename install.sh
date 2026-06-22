@@ -39,7 +39,7 @@ PREFIX="${HOME}/.local"
 BASE_URL="https://raw.githubusercontent.com/neuroblaze/smol-pi/main"
 # Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
 BIN_FILES="smol-pi smol-pi-build"
-ETC_FILES="Dockerfile.pi scripts/smol-pi-pty.py"
+ETC_FILES="Dockerfile.pi"
 
 # ---------------------------------------------------------------------------
 # Parse options
@@ -97,7 +97,7 @@ print_banner
 
 echo "==> Installing executables to $BINDIR"
 echo "==> Installing data files to $ETCDIR"
-mkdir -p "$BINDIR" "$ETCDIR/scripts"
+mkdir -p "$BINDIR" "$ETCDIR"
 
 # ---------------------------------------------------------------------------
 # Download files
@@ -112,7 +112,7 @@ for f in $ETC_FILES; do
   curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"
 done
 
-chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build" "$ETCDIR/scripts/smol-pi-pty.py"
+chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build"
 
 echo "==> Done."
 
