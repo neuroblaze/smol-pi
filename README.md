@@ -30,13 +30,13 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Install
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh | sh
 ```
 
 Prefer to read it first?
 
 ```sh
-curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh
+curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh
 less install.sh
 sh install.sh
 ```
@@ -57,7 +57,7 @@ sh install.sh --list-versions           # print available release tags
 smol-pi-build
 ```
 
-This builds the `pi-sandbox` container image using podman (or docker) and exports it as `pi-sandbox.tar`. The build uses `--no-cache`, so re-running it always pulls fresh base images and picks up upstream updates to pi, uv, and the base OS.
+This builds the default image (`pi`) using podman (or docker) and exports it as `pi.tar`. The build uses `--no-cache`, so re-running it always pulls fresh base images and picks up upstream updates to pi, uv, and the base OS.
 
 The image is based on `node:24-trixie-slim` and includes:
 
@@ -65,73 +65,33 @@ The image is based on `node:24-trixie-slim` and includes:
 - [uv](https://github.com/astral-sh/uv) for Python work
 - QoL utilities: curl, ripgrep, jq, git, vim, less, file, make, rsync, ssh, sudo, etc.
 
-### Custom images
+### Multiple images
 
-You can build a custom image with additional packages or tools. Start by generating the default Dockerfile to edit:
+You can build and keep multiple images for different development environments. The image name is derived from the Dockerfile filename: `Dockerfile.<name>` produces `<name>.tar`, launched with `smol-pi --image <name>`.
+
+```sh
+smol-pi-build              # builds Dockerfile.pi -> pi.tar (the default)
+smol-pi-build rust         # builds Dockerfile.rust -> rust.tar
+smol-pi-build cpp          # builds Dockerfile.cpp  -> cpp.tar
+```
+
+Then launch whichever you need:
+
+```sh
+smol-pi                    # default (pi.tar)
+smol-pi --image rust       # rust.tar
+smol-pi --image cpp        # cpp.tar
+```
+
+Images coexist in the data directory (`~/.local/etc/smol-pi/`); rebuilding one doesn't orphan another's smolvm image archive. To start from the default Dockerfile for a new image:
 
 ```sh
 smol-pi-build --generate-dockerfile    # writes Dockerfile.pi to CWD
+cp Dockerfile.pi Dockerfile.rust       # edit, add rustup/cargo, etc.
+smol-pi-build rust                     # builds Dockerfile.rust -> rust.tar
 ```
 
-Then modify it to suit your needs. For example, to add Python and Rust:
-
-```dockerfile
-FROM node:24-trixie-slim
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-       bash ca-certificates coreutils curl file findutils git gnupg \
-       iproute2 jq fd-find less \
-       make openssh-client procps ripgrep rsync \
-       sudo tar unzip vim xz-utils zstd \
-       python3 python3-pip \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-
-# Install Rust via rustup
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
-ENV PATH="/root/.cargo/bin:${PATH}"
-
-RUN printf '%s\n' \
-    '#!/bin/sh' \
-    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
-    '# then exec.' \
-    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
-    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
-    '# This only affects the initial size — terminal resize signals still work.' \
-    'if [ -n "$SMOL_PI_DNS" ]; then' \
-    '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
-    'fi' \
-    'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
-    '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
-    'fi' \
-    'cd /workspace 2>/dev/null || true' \
-    'exec "$@"' \
-  > /usr/local/bin/smol-pi-entrypoint \
-  && chmod +x /usr/local/bin/smol-pi-entrypoint
-
-WORKDIR /workspace
-ENTRYPOINT ["pi"]
-```
-
-Then build with your custom Dockerfile:
-
-```sh
-smol-pi-build -f ./Dockerfile.pi
-```
-
-The built `pi-sandbox.tar` is written next to the `smol-pi-build` script (typically `~/.local/bin/`). `smol-pi` looks for the image there automatically. The `--no-cache` flag ensures a clean build each time, and orphaned image archives from previous builds are cleaned up automatically.
-
-If you want to keep multiple images, use `--image-tag` to name them:
-
-```sh
-smol-pi-build -f ./Dockerfile.custom --image-tag pi-custom
-```
-
-The image tag only affects the container image name during build — `smol-pi` always loads `pi-sandbox.tar` regardless of the tag used to build it.
+The `-f <path>` flag is still available for ad-hoc custom Dockerfiles that don't follow the `Dockerfile.<name>` convention.
 
 #### Installing pi extensions
 
@@ -146,9 +106,10 @@ This runs via the podman/docker fast path (no VM boot) and writes directly to `~
 ## Run
 
 ```sh
-smol-pi                    # drop into pi interactively
+smol-pi                    # drop into pi interactively (default image)
 smol-pi -p "fix the bug"   # run pi with a prompt
 smol-pi --shell            # drop into a plain shell instead of pi
+smol-pi --image rust       # launch a different image (rust.tar)
 ```
 
 Your current working directory is mounted at `/workspace`. `~/.pi` is mounted at `/root/.pi` read-write (so pi can persist config/auth across runs). Everything else inside the VM is ephemeral.
@@ -203,22 +164,59 @@ By default, `block-local` forces 1.1.1.1 (the system DNS is typically at your LA
 ## Options
 
 ```
-smol-pi                       Drop into pi interactively
+smol-pi                       Drop into pi interactively (default image)
 smol-pi <pi-args>              Run pi with args (e.g. smol-pi -p "fix the bug")
 smol-pi --shell                Drop into a plain shell (/bin/sh) instead of pi
+smol-pi --image <name>         Launch image <name>.tar (default: pi)
+smol-pi --config <path>        Load a config file (default: ~/.local/etc/smol-pi/config)
 smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
 smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
 smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
 smol-pi --dns <server>         Override DNS server (default: mode-dependent)
+smol-pi --mem <MiB>            VM memory in MiB (default: 2048)
 smol-pi clean                   Remove stale smolvm cache (frees disk space)
 smol-pi --help                  Show this help
 ```
 
-Memory: 4 GiB (elastic via virtio-balloon).
+Memory: 2 GiB default (override with `--mem`; elastic via virtio-balloon).
+
+## Config file
+
+A config file lets you set default values for smol-pi flags without typing them every time. The default config file is `~/.local/etc/smol-pi/config`; override with `--config <path>` (useful for per-scenario configs).
+
+Format is shell variables (`KEY=VALUE`, one per line). CLI flags always take precedence over config-file values.
+
+```sh
+# ~/.local/etc/smol-pi/config — default config
+IMAGE=rust
+NETWORK_MODE=block-all
+ALLOW_HOSTS=api.anthropic.com api.openai.com
+MEM=4096
+DNS=1.1.1.1
+# PI_DIR=~/.pi   # (default)
+```
+
+Recognised keys:
+
+| Key | Maps to | Example |
+|------|---------|---------|
+| `IMAGE` | `--image` | `IMAGE=rust` |
+| `PI_DIR` | `--pi-dir` | `PI_DIR=~/.pi` |
+| `NETWORK_MODE` | `--network-mode` | `NETWORK_MODE=block-all` |
+| `ALLOW_HOSTS` | `--allow-host` (space-separated) | `ALLOW_HOSTS=api.anthropic.com api.openai.com` |
+| `DNS` | `--dns` | `DNS=1.1.1.1` |
+| `MEM` | `--mem` | `MEM=4096` |
+
+Per-scenario configs:
+
+```sh
+smol-pi --config ~/.local/etc/smol-pi/rust.conf
+smol-pi --config ~/.local/etc/smol-pi/locked-down.conf
+```
 
 ## How it works
 
-1. `smol-pi-build` creates an OCI image (`pi-sandbox.tar`) containing the pi agent and a custom entrypoint (`smol-pi-entrypoint`) that handles DNS configuration and terminal sizing.
+1. `smol-pi-build` creates an OCI image (e.g. `pi.tar`) containing the pi agent and a custom entrypoint (`smol-pi-entrypoint`) that handles DNS configuration and terminal sizing.
 2. `smol-pi` invokes `smolvm machine run` with the image, your project mounted at `/workspace`, `~/.pi` mounted at `/root/.pi`, and network flags corresponding to the chosen mode.
 3. smolvm boots a real Linux kernel in a microVM (KVM on Linux, Hypervisor.framework on macOS), with network egress filtered by a userspace proxy (passt).
 4. When the command exits, the VM is destroyed. Only the mounted directories persist.
@@ -275,8 +273,8 @@ The `--no-cache` build ensures you get fresh base images, but you should still r
 | File | Description |
 |------|-------------|
 | `smol-pi` | Launcher script — boots the VM with network/DNS config |
-| `smol-pi-build` | Image builder — podman/docker, `--no-cache`, embeds the Dockerfile |
-| `Dockerfile.pi` | Image definition — node:24-trixie-slim + pi + uv + QoL utils |
+| `smol-pi-build` | Image builder — podman/docker, `--no-cache`, embeds the default Dockerfile |
+| `Dockerfile.pi` | Default image definition — node:24-trixie-slim + pi + uv + QoL utils |
 | `install.sh` | One-line installer — downloads scripts, checks prereqs |
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |
 | `TODO` | Improvement ideas and findings |

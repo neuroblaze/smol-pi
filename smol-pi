@@ -8,9 +8,11 @@
 # injected by smolvm is used (so internal hostnames resolve).
 #
 # Usage:
-#   smol-pi                       # drop into pi interactively
+#   smol-pi                       # drop into pi interactively (default image)
 #   smol-pi <args>                # run pi with args (e.g. smol-pi -p "do the thing")
 #   smol-pi --shell               # drop into a plain shell instead of pi
+#   smol-pi --image <name>        # launch a specific image (default: pi)
+#   smol-pi --config <path>       # load a config file (default: ~/.local/etc/smol-pi/config)
 #   smol-pi --pi-dir <path>       # use an alternate .pi directory (default: ~/.pi)
 #   smol-pi --network-mode <mode> # set network egress mode (default: block-local)
 #   smol-pi --allow-host <host>   # allow egress to a specific host (block-all only)
@@ -19,7 +21,7 @@
 #   smol-pi clean                 # remove stale smolvm cache (VM dirs + orphaned image archives)
 #   smol-pi --help                # show this help
 #
-# Prereqs: smolvm on PATH, and ./pi-sandbox.tar built via smol-pi-build.
+# Prereqs: smolvm on PATH, and an image tarball built via smol-pi-build.
 
 set -e
 
@@ -55,7 +57,10 @@ if [ -d "$SCRIPT_DIR/../etc/smol-pi" ]; then
 elif [ -d "$SCRIPT_DIR" ]; then
   DATA_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 fi
-IMAGE="$DATA_DIR/pi-sandbox.tar"
+
+# Default config file path: $DATA_DIR/config (i.e. ~/.local/etc/smol-pi/config).
+# Override with --config <path>.
+CONFIG_FILE="$DATA_DIR/config"
 
 # Default .pi directory: ~/.pi (resolved to an absolute path).
 PI_DIR="$(cd ~ && pwd)/.pi"
@@ -72,14 +77,21 @@ ALLOW_HOSTS=""
 # DNS override (empty = mode-dependent default).
 DNS_OVERRIDE=""
 
+# Default image name. Override with --image <name>.
+# The image tarball is resolved to $DATA_DIR/<name>.tar, with a fallback
+# to pi-sandbox.tar for the default image (backward compat with pre-v1.1.0).
+IMAGE_NAME="pi"
+
 usage() {
   cat <<USAGE
 smol-pi: boot an ephemeral pi-sandbox microVM
 
 Usage:
-  smol-pi                       Drop into pi interactively
+  smol-pi                       Drop into pi interactively (default image)
   smol-pi <pi-args>              Run pi with args (e.g. smol-pi -p "fix the bug")
   smol-pi --shell                Drop into a plain shell (/bin/sh) instead of pi
+  smol-pi --image <name>        Launch image <name>.tar (default: pi)
+  smol-pi --config <path>       Load a config file (default: $CONFIG_FILE)
   smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
   smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
   smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
@@ -108,10 +120,17 @@ DNS: block-local forces 1.1.1.1; other modes use the system DNS injected
 
 Memory: 2 GiB default (override with --mem; elastic via virtio-balloon).
 
-Image: $IMAGE
+Image: $DATA_DIR/<name>.tar (default name: pi).
+       For the default image, pi-sandbox.tar is used as a fallback if
+       pi.tar is absent (backward compat with pre-v1.1.0 builds).
+
+Config: a shell-var file (KEY=VALUE, one per line) at $CONFIG_FILE by
+        default. Override with --config <path>. CLI flags take precedence
+        over config-file values. Recognised keys: IMAGE, PI_DIR,
+        NETWORK_MODE, ALLOW_HOSTS (space-separated), DNS, MEM.
 
 clean: smolvm >= 1.3.1 cleans up VM state automatically on graceful
-       exit. `smol-pi clean` is a safety net for crash recovery (SIGKILL'd
+       exit. \`smol-pi clean\` is a safety net for crash recovery (SIGKILL'd
        VMs, OOM kills) and for smolvm < 1.3.1, which leaks ~1.4 GB of
        qcow2 disks and logs per run into ~/.cache/smolvm/.
 USAGE
@@ -120,6 +139,16 @@ USAGE
 # Default command if no args are given: pi interactively.
 CMD="pi"
 SHELL_MODE=0
+
+# Track which flags were set on the CLI, so config-file values don't
+# override explicit CLI args. A flag set on the CLI wins over the config
+# file; the config file wins over built-in defaults.
+CLI_IMAGE=0
+CLI_PI_DIR=0
+CLI_NETWORK_MODE=0
+CLI_ALLOW_HOSTS=0
+CLI_DNS=0
+CLI_MEM=0
 
 # ---------------------------------------------------------------------------
 # Cleanup function: remove stale smolvm VM state dirs and orphaned image
@@ -134,7 +163,8 @@ SHELL_MODE=0
 # - All VM state dirs in ~/.cache/smolvm/vms/ (these are ephemeral runs,
 #   none should be persistent)
 # - Orphaned image archives in ~/.cache/smolvm-image-archives/ that don't
-#   match the current pi-sandbox.tar hash
+#   match any .tar currently in the data directory (so rebuilding one
+#   image doesn't orphan another image's archive).
 # ---------------------------------------------------------------------------
 SMOLVM_CACHE="${SMOLVM_CACHE_DIR:-$(cd ~ && pwd)/.cache/smolvm}"
 SMOLVM_VMS_DIR="$SMOLVM_CACHE/vms"
@@ -155,10 +185,17 @@ clean_smolvm_cache() {
     done
   fi
 
-  # Remove orphaned image archives (keep the one matching current image).
-  current_hash=""
-  if [ -f "$IMAGE" ]; then
-    current_hash=$(sha256sum "$IMAGE" 2>/dev/null | cut -d' ' -f1)
+  # Remove orphaned image archives.
+  # Keep archives whose hash matches any .tar currently in the data dir
+  # (so multiple images coexist without being cleaned up as orphans).
+  current_hashes=""
+  if [ -n "$DATA_DIR" ] && [ -d "$DATA_DIR" ]; then
+    for tar in "$DATA_DIR"/*.tar; do
+      [ -f "$tar" ] || continue
+      h=$(sha256sum "$tar" 2>/dev/null | cut -d' ' -f1)
+      [ -n "$h" ] && current_hashes="$current_hashes
+$h"
+    done
   fi
 
   removed_archives=0
@@ -166,9 +203,9 @@ clean_smolvm_cache() {
     for dir in "$SMOLVM_ARCHIVES_DIR"/*/; do
       [ -d "$dir" ] || continue
       hash=$(basename "$dir")
-      if [ -n "$current_hash" ] && [ "$hash" = "$current_hash" ]; then
-        continue
-      fi
+      case "$current_hashes" in
+        *"$hash"*) continue ;;
+      esac
       size=$(du -sb "$dir" 2>/dev/null | cut -f1)
       rm -rf "$dir"
       removed_archives=$((removed_archives + 1))
@@ -204,16 +241,44 @@ while [ $# -gt 0 ]; do
       CMD="/bin/sh"
       SHELL_MODE=1
       ;;
+    --image)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --image requires an argument" >&2
+        exit 2
+      fi
+      IMAGE_NAME="$2"
+      CLI_IMAGE=1
+      shift 2
+      ;;
+    --image=*)
+      IMAGE_NAME="${1#--image=}"
+      CLI_IMAGE=1
+      shift
+      ;;
+    --config)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --config requires an argument" >&2
+        exit 2
+      fi
+      CONFIG_FILE="$2"
+      shift 2
+      ;;
+    --config=*)
+      CONFIG_FILE="${1#--config=}"
+      shift
+      ;;
     --pi-dir)
       if [ $# -lt 2 ]; then
         echo "smol-pi: --pi-dir requires an argument" >&2
         exit 2
       fi
       PI_DIR="$2"
+      CLI_PI_DIR=1
       shift 2
       ;;
     --pi-dir=*)
       PI_DIR="${1#--pi-dir=}"
+      CLI_PI_DIR=1
       shift
       ;;
     --network-mode)
@@ -222,10 +287,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       NETWORK_MODE="$2"
+      CLI_NETWORK_MODE=1
       shift 2
       ;;
     --network-mode=*)
       NETWORK_MODE="${1#--network-mode=}"
+      CLI_NETWORK_MODE=1
       shift
       ;;
     --allow-host)
@@ -234,10 +301,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       ALLOW_HOSTS="$ALLOW_HOSTS $2"
+      CLI_ALLOW_HOSTS=1
       shift 2
       ;;
     --allow-host=*)
       ALLOW_HOSTS="$ALLOW_HOSTS ${1#--allow-host=}"
+      CLI_ALLOW_HOSTS=1
       shift
       ;;
     --dns)
@@ -246,10 +315,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       DNS_OVERRIDE="$2"
+      CLI_DNS=1
       shift 2
       ;;
     --dns=*)
       DNS_OVERRIDE="${1#--dns=}"
+      CLI_DNS=1
       shift
       ;;
     --mem)
@@ -258,10 +329,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       MEM="$2"
+      CLI_MEM=1
       shift 2
       ;;
     --mem=*)
       MEM="${1#--mem=}"
+      CLI_MEM=1
       shift
       ;;
     *)
@@ -274,6 +347,68 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+
+# ---------------------------------------------------------------------------
+# Load config file (shell vars: KEY=VALUE, one per line).
+#
+# Precedence: CLI flags > config file > built-in defaults.
+# We source the config file into a subshell and capture only the keys we
+# recognise, applying each only if the corresponding CLI flag was not set.
+# This keeps the source step sandboxed — arbitrary code in the config file
+# does run (it's a sourced shell file, like .bashrc), but only recognised
+# keys affect smol-pi's behaviour.
+# ---------------------------------------------------------------------------
+if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
+  # Evaluate the config file in a subshell and print recognised vars as
+  # KEY=VALUE lines. We then parse those lines here. This isolates the
+  # config file's scope (it can't accidentally clobber our working vars).
+  cfg_out=$(
+    . "$CONFIG_FILE" 2>/dev/null || true
+    [ -n "$IMAGE" ] && printf 'IMAGE=%s\n' "$IMAGE"
+    [ -n "$PI_DIR" ] && printf 'PI_DIR=%s\n' "$PI_DIR"
+    [ -n "$NETWORK_MODE" ] && printf 'NETWORK_MODE=%s\n' "$NETWORK_MODE"
+    [ -n "$ALLOW_HOSTS" ] && printf 'ALLOW_HOSTS=%s\n' "$ALLOW_HOSTS"
+    [ -n "$DNS" ] && printf 'DNS=%s\n' "$DNS"
+    [ -n "$MEM" ] && printf 'MEM=%s\n' "$MEM"
+  )
+  # Apply config values only where the CLI didn't set the flag.
+  if [ "$CLI_IMAGE" -eq 0 ]; then
+    cfg_image=$(printf '%s\n' "$cfg_out" | sed -n 's/^IMAGE=//p' | head -n 1)
+    [ -n "$cfg_image" ] && IMAGE_NAME="$cfg_image"
+  fi
+  if [ "$CLI_PI_DIR" -eq 0 ]; then
+    cfg_pidir=$(printf '%s\n' "$cfg_out" | sed -n 's/^PI_DIR=//p' | head -n 1)
+    [ -n "$cfg_pidir" ] && PI_DIR="$cfg_pidir"
+  fi
+  if [ "$CLI_NETWORK_MODE" -eq 0 ]; then
+    cfg_net=$(printf '%s\n' "$cfg_out" | sed -n 's/^NETWORK_MODE=//p' | head -n 1)
+    [ -n "$cfg_net" ] && NETWORK_MODE="$cfg_net"
+  fi
+  if [ "$CLI_ALLOW_HOSTS" -eq 0 ]; then
+    cfg_hosts=$(printf '%s\n' "$cfg_out" | sed -n 's/^ALLOW_HOSTS=//p' | head -n 1)
+    [ -n "$cfg_hosts" ] && ALLOW_HOSTS="$cfg_hosts"
+  fi
+  if [ "$CLI_DNS" -eq 0 ]; then
+    cfg_dns=$(printf '%s\n' "$cfg_out" | sed -n 's/^DNS=//p' | head -n 1)
+    [ -n "$cfg_dns" ] && DNS_OVERRIDE="$cfg_dns"
+  fi
+  if [ "$CLI_MEM" -eq 0 ]; then
+    cfg_mem=$(printf '%s\n' "$cfg_out" | sed -n 's/^MEM=//p' | head -n 1)
+    [ -n "$cfg_mem" ] && MEM="$cfg_mem"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the image tarball path from IMAGE_NAME.
+#
+# <name>.tar in the data directory. For the default image ("pi"), fall back
+# to pi-sandbox.tar if pi.tar is absent (backward compat with pre-v1.1.0
+# builds that wrote pi-sandbox.tar).
+# ---------------------------------------------------------------------------
+IMAGE="$DATA_DIR/$IMAGE_NAME.tar"
+if [ ! -f "$IMAGE" ] && [ "$IMAGE_NAME" = "pi" ] && [ -f "$DATA_DIR/pi-sandbox.tar" ]; then
+  IMAGE="$DATA_DIR/pi-sandbox.tar"
+fi
 
 # ---------------------------------------------------------------------------
 # Validate network mode and --allow-host usage.
@@ -334,11 +469,12 @@ if [ "$SHELL_MODE" -eq 0 ] && [ $# -gt 0 ]; then
       fi
 
       # Load the image from the tarball. podman can load directly; docker too.
-      IMAGE_TAG="pi-sandbox"
+      # The container tag is namespaced by image name to avoid collisions.
+      IMAGE_TAG="pi-sandbox-$IMAGE_NAME"
       if ! $CT image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
         if [ ! -f "$IMAGE" ]; then
           echo "smol-pi: image not found at $IMAGE" >&2
-          echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build" >&2
+          echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build $IMAGE_NAME" >&2
           exit 1
         fi
         $CT load -i "$IMAGE" >/dev/null 2>&1
@@ -376,7 +512,7 @@ fi
 
 if [ ! -f "$IMAGE" ]; then
   echo "smol-pi: image not found at $IMAGE" >&2
-  echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build" >&2
+  echo "smol-pi: build it first with: $SCRIPT_DIR/smol-pi-build $IMAGE_NAME" >&2
   exit 1
 fi
 
@@ -457,7 +593,7 @@ fi
 # Kill any orphaned smolvm-bin processes from a previous run that crashed
 # or was killed without clean shutdown. Each consumes ~2 GB RSS and would
 # accumulate until the host reboots. We match smolvm-bin processes running
-# our pi-sandbox.tar image.
+# our image tarball.
 if [ -n "$(command -v pgrep)" ]; then
   for pid in $(pgrep -x smolvm-bin 2>/dev/null); do
     cmdline=$(cat /proc/$pid/cmdline 2>/dev/null | tr '\0' ' ')

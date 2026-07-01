@@ -1,12 +1,17 @@
 #!/bin/sh
-# smol-pi-build: build the pi-sandbox image and export it as a tar for
+# smol-pi-build: build a smol-pi sandbox image and export it as a tar for
 # smolvm to boot.
 #
 # Usage:
-#   smol-pi-build                       # build with the default Dockerfile
-#   smol-pi-build -f <path>             # build with a custom Dockerfile
+#   smol-pi-build                       # build the default image (pi)
+#   smol-pi-build rust                  # build Dockerfile.rust -> rust.tar
+#   smol-pi-build -f <path>             # build a custom Dockerfile
 #   smol-pi-build --generate-dockerfile # write the default Dockerfile to CWD
-#   smol-pi-build --image-tag <name>    # override the image tag
+#
+# The image name is derived from the positional argument: 'rust' builds
+# Dockerfile.rust and writes rust.tar. With no argument, Dockerfile.pi is
+# built and pi.tar is written (falling back to pi-sandbox.tar for backward
+# compatibility with pre-v1.1.0 installs).
 #
 # Prefers podman (rootless, daemonless) over docker if available.
 
@@ -24,23 +29,28 @@ elif [ -d "$SCRIPT_DIR" ]; then
   DATA_DIR="$(cd "$SCRIPT_DIR" && pwd)"
 fi
 
-IMAGE_TAG="pi-sandbox"
-TARBALL="pi-sandbox.tar"
+IMAGE_NAME="pi"
 DOCKERFILE=""
 GENERATE=0
 
 usage() {
   cat <<USAGE
-smol-pi-build: build the pi-sandbox image and export a tar for smolvm
+smol-pi-build: build a smol-pi sandbox image and export a tar for smolvm
 
 Usage:
-  smol-pi-build                       Build with the default Dockerfile
-  smol-pi-build -f <path>             Build with a custom Dockerfile
-  smol-pi-build --generate-dockerfile Write the default Dockerfile.pi to CWD
-  smol-pi-build --image-tag <name>    Override the image tag (default: pi-sandbox)
+  smol-pi-build [<name>]               Build Dockerfile.<name> -> <name>.tar
+                                        (default name: pi -> Dockerfile.pi)
+  smol-pi-build -f <path>              Build a custom Dockerfile (name: pi)
+  smol-pi-build --generate-dockerfile  Write the default Dockerfile.pi to CWD
+
+Options:
+  -f <path>           Build a custom Dockerfile instead of Dockerfile.<name>
+  --generate-dockerfile  Write the default Dockerfile to ./Dockerfile.pi
+  --help, -h          Show this help
 
 The build uses podman if available, otherwise docker.
-The output tar is written to the smol-pi data directory as $TARBALL.
+The output tar is written to the smol-pi data directory as <name>.tar.
+Use 'smol-pi --image <name>' to launch it.
 USAGE
 }
 
@@ -66,22 +76,14 @@ while [ $# -gt 0 ]; do
       GENERATE=1
       shift
       ;;
-    --image-tag)
-      if [ $# -lt 2 ]; then
-        echo "smol-pi-build: --image-tag requires an argument" >&2
-        exit 2
-      fi
-      IMAGE_TAG="$2"
-      shift 2
-      ;;
-    --image-tag=*)
-      IMAGE_TAG="${1#--image-tag=}"
-      shift
-      ;;
-    *)
+    -*)
       echo "smol-pi-build: unknown option: $1" >&2
       usage >&2
       exit 2
+      ;;
+    *)
+      IMAGE_NAME="$1"
+      shift
       ;;
   esac
 done
@@ -158,6 +160,13 @@ fi
 
 # ---------------------------------------------------------------------------
 # Resolve which Dockerfile to build.
+#
+# Precedence:
+#   1. -f <path>  — explicit Dockerfile path (image name stays 'pi' unless
+#      overridden by a later positional arg; -f is rarely combined with a
+#      name, but if both are given the name wins for the output tarball).
+#   2. Positional <name> — Dockerfile.<name> in the data directory.
+#   3. Default — Dockerfile.pi in the data directory.
 # ---------------------------------------------------------------------------
 if [ -n "$DOCKERFILE" ]; then
   # User-supplied path (may be relative to CWD or absolute).
@@ -168,40 +177,52 @@ if [ -n "$DOCKERFILE" ]; then
   BUILD_CONTEXT="$(dirname "$DOCKERFILE")"
   BUILD_FILE="$DOCKERFILE"
 else
-  # Default: the bundled Dockerfile.pi in the data directory.
-  BUILD_FILE="$DATA_DIR/Dockerfile.pi"
+  BUILD_FILE="$DATA_DIR/Dockerfile.$IMAGE_NAME"
   if [ ! -f "$BUILD_FILE" ]; then
-    echo "smol-pi-build: default Dockerfile not found at $BUILD_FILE" >&2
-    echo "smol-pi-build: generate one with: smol-pi-build --generate-dockerfile" >&2
+    echo "smol-pi-build: Dockerfile not found: $BUILD_FILE" >&2
+    echo "smol-pi-build: create it, or generate the default with: smol-pi-build --generate-dockerfile" >&2
     exit 1
   fi
   BUILD_CONTEXT="$DATA_DIR"
 fi
 
+# Container image tag: namespaced to avoid collisions with other images.
+IMAGE_TAG="pi-sandbox-$IMAGE_NAME"
+# Output tarball: <name>.tar in the data directory.
+TARBALL="$IMAGE_NAME.tar"
+
 # ---------------------------------------------------------------------------
 # Build and export.
 # ---------------------------------------------------------------------------
-echo "==> Building $IMAGE_TAG with $CT (Dockerfile: $BUILD_FILE)"
+echo "==> Building image '$IMAGE_NAME' with $CT (Dockerfile: $BUILD_FILE)"
 $CT build --no-cache -t "$IMAGE_TAG" -f "$BUILD_FILE" "$BUILD_CONTEXT"
 
 echo "==> Exporting to $TARBALL"
-# Remove any existing tarball — podman save refuses to overwrite.
 rm -f "$DATA_DIR/$TARBALL"
 $CT save "$IMAGE_TAG" -o "$DATA_DIR/$TARBALL"
 
 # Clean up orphaned smolvm image archives from previous builds.
 # smolvm caches image tarballs content-addressed by hash in
-# ~/.cache/smolvm-image-archives/. Old builds leave orphaned copies.
+# ~/.cache/smolvm-image-archives/. We keep archives matching any .tar
+# currently in the data dir (so rebuilding one image doesn't orphan
+# another image's archive).
 ARCHIVES_DIR="$HOME/.cache/smolvm-image-archives"
 if [ -d "$ARCHIVES_DIR" ]; then
-  current_hash=$(sha256sum "$DATA_DIR/$TARBALL" 2>/dev/null | cut -d' ' -f1)
+  # Build a newline-separated list of current tarball hashes.
+  current_hashes=""
+  for tar in "$DATA_DIR"/*.tar; do
+    [ -f "$tar" ] || continue
+    h=$(sha256sum "$tar" 2>/dev/null | cut -d' ' -f1)
+    [ -n "$h" ] && current_hashes="$current_hashes
+$h"
+  done
   removed=0
   for dir in "$ARCHIVES_DIR"/*/; do
     [ -d "$dir" ] || continue
     hash=$(basename "$dir")
-    if [ -n "$current_hash" ] && [ "$hash" = "$current_hash" ]; then
-      continue
-    fi
+    case "$current_hashes" in
+      *"$hash"*) continue ;;
+    esac
     rm -rf "$dir"
     removed=$((removed + 1))
   done
@@ -210,4 +231,4 @@ if [ -d "$ARCHIVES_DIR" ]; then
   fi
 fi
 
-echo "==> Done. Run with: $SCRIPT_DIR/smol-pi"
+echo "==> Done. Run with: smol-pi --image $IMAGE_NAME"
