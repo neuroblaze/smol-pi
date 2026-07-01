@@ -30,18 +30,26 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Install
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/main/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh | sh
 ```
 
 Prefer to read it first?
 
 ```sh
-curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/main/install.sh
+curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh
 less install.sh
 sh install.sh
 ```
 
-This downloads `smol-pi`, `smol-pi-build`, and `Dockerfile.pi` to `~/.local/bin/` (override with `--prefix <dir>`).
+This downloads `smol-pi`, `smol-pi-build`, and `Dockerfile.pi` to `~/.local/bin/` (override with `--prefix <dir>`). The installer is pinned to a release tag, so the files you get are immutable and reproducible.
+
+To install a different release:
+
+```sh
+sh install.sh --version v1.0.0          # specific tag
+sh install.sh --version latest          # auto-resolve newest release
+sh install.sh --list-versions           # print available release tags
+```
 
 ## Build the sandbox image
 
@@ -217,15 +225,13 @@ Memory: 4 GiB (elastic via virtio-balloon).
 
 ## Disk cleanup
 
-smolvm 1.1.1 doesn't clean up after ephemeral runs — each `machine run` leaves behind ~1.4 GB of VM state (qcow2 disks, logs) in `~/.cache/smolvm/vms/`, plus image archives in `~/.cache/smolvm-image-archives/`.
+smolvm >= 1.3.1 cleans up ephemeral VM state automatically on graceful exit ([smolvm#497](https://github.com/smol-machines/smolvm/pull/497)). Earlier versions leaked ~1.4 GB of VM state (qcow2 disks, logs) per `machine run` into `~/.cache/smolvm/vms/`, and image archives accumulate in `~/.cache/smolvm-image-archives/` across builds.
 
-smol-pi handles this automatically:
+smol-pi keeps a safety net for the cases smolvm can't handle itself:
 
-- **Before each boot**: stale VM dirs from previous runs are cleaned up in the background.
-- **After each exit**: the VM dir from the run just completed is cleaned up.
-- **`smol-pi-build`**: orphaned image archives from previous builds are removed after a rebuild.
-
-To manually clean up (e.g. after a crash):
+- **Orphaned processes**: if smol-pi is `SIGKILL`'d (OOM killer, `kill -9`), the smolvm process can't run its cleanup. The next `smol-pi` run detects and kills any orphaned `smolvm-bin` using the same image before booting.
+- **`smol-pi-build`**: orphaned image archives from previous builds are removed after a rebuild (applies on any smolvm version).
+- **`smol-pi clean`**: manual reclamation of stale VM dirs and orphaned image archives, for crash recovery or smolvm < 1.3.1.
 
 ```sh
 smol-pi clean
@@ -235,7 +241,7 @@ This removes all stale VM dirs and orphaned image archives, keeping only the arc
 
 ## Orphaned VM processes
 
-If the smol-pi script is killed with `SIGKILL` (OOM killer, `kill -9`), the trap can't fire and the smolvm process may stay running, consuming ~2 GB RSS. The next `smol-pi` run detects and kills any orphaned `smolvm-bin` process using the same image before booting. Normal exits and trappable signals (Ctrl+C, terminal close, SSH disconnect) are handled cleanly — the VM is terminated and disk state is cleaned up.
+If the smol-pi script is killed with `SIGKILL` (OOM killer, `kill -9`), smolvm can't run its graceful-exit cleanup and the smolvm process may stay running, consuming ~2 GB RSS. The next `smol-pi` run detects and kills any orphaned `smolvm-bin` process using the same image before booting. Normal exits and trappable signals (Ctrl+C, terminal close, SSH disconnect) are handled cleanly by smolvm >= 1.3.1 — the VM is terminated and disk state is reclaimed. For leaked disk state after a crash, run `smol-pi clean`.
 
 ## Security
 
