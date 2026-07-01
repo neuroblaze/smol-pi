@@ -6,16 +6,16 @@
 # or --version latest to auto-resolve the newest release via the GitHub API.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh | sh
+#   curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh | sh
 #
 # Or download-and-review:
-#   curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.0.1/install.sh
+#   curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh
 #   less install.sh
 #   sh install.sh
 #
 # Options:
 #   --prefix <dir>       Install to <dir>/bin and <dir>/etc (default: ~/.local)
-#   --version <tag>      Release tag to install (default: v1.0.1; or "latest")
+#   --version <tag>      Release tag to install (default: v1.1.0; or "latest")
 #   --list-versions      Print available release tags and exit
 
 set -e
@@ -43,7 +43,7 @@ BANNER
 # ---------------------------------------------------------------------------
 # The release tag this installer ships from. Bumped on each release; the
 # README install command references the same tag in its URL.
-VERSION="v1.0.1"
+VERSION="v1.1.0"
 REPO="neuroblaze/smol-pi"
 PREFIX="${HOME}/.local"
 # Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
