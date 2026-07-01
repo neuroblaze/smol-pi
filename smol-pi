@@ -110,11 +110,10 @@ Memory: 2 GiB default (override with --mem; elastic via virtio-balloon).
 
 Image: $IMAGE
 
-clean: smolvm 1.1.1 leaves VM state dirs and image archives in
-       ~/.cache/smolvm/ after each ephemeral run (~1.4 GB per run).
-       'smol-pi clean' removes stale VM dirs and orphaned image archives
-       (keeping the archive for the current pi-sandbox.tar). This is also
-       done automatically before each VM boot.
+clean: smolvm >= 1.3.1 cleans up VM state automatically on graceful
+       exit. `smol-pi clean` is a safety net for crash recovery (SIGKILL'd
+       VMs, OOM kills) and for smolvm < 1.3.1, which leaks ~1.4 GB of
+       qcow2 disks and logs per run into ~/.cache/smolvm/.
 USAGE
 }
 
@@ -124,8 +123,12 @@ SHELL_MODE=0
 
 # ---------------------------------------------------------------------------
 # Cleanup function: remove stale smolvm VM state dirs and orphaned image
-# archives. smolvm 1.1.1 doesn't clean up after ephemeral `machine run`,
-# leaving ~1.4 GB of qcow2 disks and logs per run.
+# archives. smolvm >= 1.3.1 cleans up after ephemeral `machine run` on
+# graceful exit (https://github.com/smol-machines/smolvm/pull/497), so this
+# is now only a safety net for the cases where smolvm can't clean up itself:
+#   - SIGKILL'd VM (OOM killer, `kill -9`) on any smolvm version
+#   - smolvm < 1.3.1 (no built-in ephemeral cleanup)
+# It's exposed as `smol-pi clean` for manual use.
 #
 # We remove:
 # - All VM state dirs in ~/.cache/smolvm/vms/ (these are ephemeral runs,
@@ -464,21 +467,24 @@ if [ -n "$(command -v pgrep)" ]; then
   done
 fi
 
-# Clean up stale VM dirs from previous runs before booting.
-# smolvm 1.1.1 leaves VM state behind after ephemeral runs.
-clean_smolvm_cache >/dev/null 2>&1 &
-
+# Preemptive disk cleanup is intentionally NOT done here on smolvm >= 1.3.1,
+# which reclaims ephemeral VM state on graceful exit. We only kill orphaned
+# smolvm-bin processes (above) that would otherwise block reboots and waste
+# RAM; leaked disk state from a prior crash is reclaimed via `smol-pi clean`.
+#
 # Run the VM as a foreground child (not exec, not backgrounded).
 # - TTY works: the child stays in our process group and inherits the
 #   controlling terminal, so interactive input and terminal resize work.
 # - Signals work: SIGINT/SIGHUP go to the entire foreground process group,
-#   so both the shell and smolvm receive them — smolvm dies, our EXIT trap
-#   fires, cleanup runs.
-# - After normal exit, the EXIT trap runs clean_smolvm_cache.
-# - If the shell is SIGKILLed (OOM, kill -9), the trap can't fire — but
-#   the orphan cleanup at the top of the next run handles that case.
-trap 'clean_smolvm_cache >/dev/null 2>&1' EXIT
-
+#   so both the shell and smolvm receive them — smolvm dies and runs its
+#   own ephemeral-disk cleanup (>= 1.3.1; see PR #497).
+# - If the script is SIGKILLed (OOM, kill -9), smolvm can't run its
+#   cleanup — the orphan-process kill at the top of the next run handles
+#   that, and `smol-pi clean` reclaims the leaked disk state.
+# We don't trap EXIT to run clean_smolvm_cache here: smolvm >= 1.3.1
+# already reclaims ephemeral VM state on graceful exit, and on older
+# versions a redundant cleanup would race with a still-shutting-down
+# smolvm. Manual `smol-pi clean` covers the crash-recovery case.
 smolvm machine run \
   --mem "$MEM" \
   --image "$IMAGE" \
@@ -490,6 +496,4 @@ smolvm machine run \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
 VM_EXIT=$?
 
-# Explicitly run cleanup and exit (the EXIT trap also fires, but this
-# ensures the exit code is propagated correctly).
 exit $VM_EXIT
