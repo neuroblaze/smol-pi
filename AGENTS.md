@@ -46,6 +46,38 @@ Anything a user would want to pin to: a new feature, a behaviour change,
 or a fix. Pure internal refactors with no user-visible effect don't need a
 release. When in doubt, cut one — tags are cheap.
 
+## Base image: keep Debian Trixie, not Alpine
+
+An experiment compared `node:24-trixie-slim` (glibc) against
+`node:24-alpine` (musl) for the sandbox image. Results (smolvm 1.3.6,
+3 warm-cache runs each):
+
+| Metric                | Trixie-slim | Alpine  | Delta        |
+|-----------------------|------------|---------|--------------|
+| Build time             | 61s        | 42s     | Alpine -32%  |
+| Image tarball          | 642 MB     | 476 MB  | Alpine -26%  |
+| VM boot (median)       | 19.9s      | 15.5s   | Alpine -22%  |
+| Container fast-path    | 2.2s       | 3.0s    | Trixie -0.8s |
+
+`pi` ran correctly on Alpine (no musl/native-addon failures at the
+time of testing), but the decision was to stay on Trixie:
+
+- These VMs are dev environments, not production. The absolute
+  numbers (glibc compatibility, Node's own first-class support for
+  glibc, fewer "works on my machine" surprises) outweigh the
+  incremental gains.
+- Alpine was actually slower on the container fast-path (`pi install`
+  / `list` / `config`), which is the hot path for subcommands.
+- musl compatibility is fragile: Node native addons and prebuilt
+  binaries (node-pre-gyp/napi) occasionally don't ship musl variants.
+  Today pi works, but a future pi dep could silently break on Alpine.
+- "node is still node" — the base image is a small fraction of the
+  total; the Node runtime + npm deps dominate, so the Alpine win is
+  bounded.
+
+Revisit if a future requirement makes image size critical, or if
+smolvm adds a feature that makes the smaller image matter more.
+
 ## Repo layout
 
 - `smol-pi` — launcher script (boots the VM)
