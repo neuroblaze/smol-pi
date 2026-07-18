@@ -481,18 +481,31 @@ if [ "$SHELL_MODE" -eq 0 ] && [ $# -gt 0 ]; then
       fi
 
       # Run the subcommand in a container.
-      # - Mount ~/.pi at /root/.pi (RW — subcommands mutate it)
+      # - Mount ~/.pi at /root/.pi (podman) or /pi-home/.pi (docker)
       # - Mount CWD at /workspace (some subcommands read from it)
-      # - For docker, use --user to avoid root-owned files in ~/.pi.
-      #   podman rootless handles UID mapping automatically.
-      CT_USER_FLAGS=""
+      # - podman is rootless: UID mapping makes /root writable as the
+      #   container root user, and host files come out owned by us.
+      #   HOME=/root so pi finds its config at $HOME/.pi.
+      # - docker --user runs as our host UID/GID to avoid root-owned files
+      #   in ~/.pi. But /root (mode 700, uid 0) is not traversable by a
+      #   non-root UID, so the /root/.pi bind mount is unreachable.
+      #   Mount at /pi-home/.pi instead and set HOME=/pi-home — the bind
+      #   mount creates the path, any UID can traverse it, and pi finds
+      #   its config at $HOME/.pi.
       if [ "$CT" = "docker" ]; then
+        CT_PI_MOUNT="/pi-home/.pi"
         CT_USER_FLAGS="--user $(id -u):$(id -g)"
+        CT_HOME="/pi-home"
+      else
+        CT_PI_MOUNT="/root/.pi"
+        CT_USER_FLAGS=""
+        CT_HOME="/root"
       fi
 
       exec $CT run --rm -it \
         $CT_USER_FLAGS \
-        -v "$PI_DIR:/root/.pi" \
+        -e "HOME=$CT_HOME" \
+        -v "$PI_DIR:$CT_PI_MOUNT" \
         -v "$CWD:/workspace" \
         -w /workspace \
         "$IMAGE_TAG" \

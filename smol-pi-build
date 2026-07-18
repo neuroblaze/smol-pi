@@ -13,6 +13,9 @@
 # built and pi.tar is written (falling back to pi-sandbox.tar for backward
 # compatibility with pre-v1.1.0 installs).
 #
+# Dockerfile lookup: ./Dockerfile.<name> (CWD) is checked first, then
+# the data directory ($PREFIX/etc/smol-pi or next to this script).
+#
 # Prefers podman (rootless, daemonless) over docker if available.
 
 set -e
@@ -48,6 +51,8 @@ Options:
   --generate-dockerfile  Write the default Dockerfile to ./Dockerfile.pi
   --help, -h          Show this help
 
+Dockerfile lookup: ./Dockerfile.<name> (CWD) is checked first, then the
+data directory ($PREFIX/etc/smol-pi or next to this script).
 The build uses podman if available, otherwise docker.
 The output tar is written to the smol-pi data directory as <name>.tar.
 Use 'smol-pi --image <name>' to launch it.
@@ -120,9 +125,10 @@ FROM node:24-trixie-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
        bash ca-certificates coreutils curl file findutils git gnupg \
-       iproute2 iputils-ping iputils-tracepath jq less \
+       iproute2 iputils-ping iputils-tracepath jq fd-find less \
        make openssh-client procps ripgrep rsync \
        sudo tar unzip vim xz-utils zstd \
+  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
@@ -165,8 +171,8 @@ fi
 #   1. -f <path>  — explicit Dockerfile path (image name stays 'pi' unless
 #      overridden by a later positional arg; -f is rarely combined with a
 #      name, but if both are given the name wins for the output tarball).
-#   2. Positional <name> — Dockerfile.<name> in the data directory.
-#   3. Default — Dockerfile.pi in the data directory.
+#   2. Positional <name> — Dockerfile.<name> in CWD, then the data directory.
+#   3. Default — Dockerfile.pi in CWD, then the data directory.
 # ---------------------------------------------------------------------------
 if [ -n "$DOCKERFILE" ]; then
   # User-supplied path (may be relative to CWD or absolute).
@@ -177,13 +183,16 @@ if [ -n "$DOCKERFILE" ]; then
   BUILD_CONTEXT="$(dirname "$DOCKERFILE")"
   BUILD_FILE="$DOCKERFILE"
 else
-  BUILD_FILE="$DATA_DIR/Dockerfile.$IMAGE_NAME"
+  BUILD_FILE="./Dockerfile.$IMAGE_NAME"
   if [ ! -f "$BUILD_FILE" ]; then
-    echo "smol-pi-build: Dockerfile not found: $BUILD_FILE" >&2
+    BUILD_FILE="$DATA_DIR/Dockerfile.$IMAGE_NAME"
+  fi
+  if [ ! -f "$BUILD_FILE" ]; then
+    echo "smol-pi-build: Dockerfile not found: ./Dockerfile.$IMAGE_NAME or $DATA_DIR/Dockerfile.$IMAGE_NAME" >&2
     echo "smol-pi-build: create it, or generate the default with: smol-pi-build --generate-dockerfile" >&2
     exit 1
   fi
-  BUILD_CONTEXT="$DATA_DIR"
+  BUILD_CONTEXT="$(dirname "$BUILD_FILE")"
 fi
 
 # Container image tag: namespaced to avoid collisions with other images.
