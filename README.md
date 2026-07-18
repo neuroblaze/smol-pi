@@ -30,13 +30,13 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Install
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.1/install.sh | sh
 ```
 
 Prefer to read it first?
 
 ```sh
-curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.0/install.sh
+curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.1/install.sh
 less install.sh
 sh install.sh
 ```
