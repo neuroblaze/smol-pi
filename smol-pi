@@ -270,6 +270,29 @@ host_has_ipv6_route() {
   return 2
 }
 
+# ---------------------------------------------------------------------------
+# Probe whether the host has a route to the global IPv4 internet.
+#
+# On IPv6-only hosts, the default block-local DNS (1.1.1.1, IPv4) is
+# unreachable — TSI forwards connect() to the host, which has no IPv4
+# route. Returns 0 if reachable, 1 if not, 2 if undetermined. On
+# undetermined we assume IPv4 is available (preserves current behavior).
+# ---------------------------------------------------------------------------
+host_has_ipv4_route() {
+  if command -v ip >/dev/null 2>&1; then
+    ip route get 1.0.0.0 >/dev/null 2>&1 && return 0
+    ip route get 8.8.8.8 >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  if [ -r /proc/net/route ]; then
+    while read -r iface dest gw flags rest; do
+      [ "$dest" = "00000000" ] && return 0
+    done < /proc/net/route
+    return 1
+  fi
+  return 2
+}
+
 # Parse our own flags. Everything else is passed through to the command.
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -578,7 +601,10 @@ if [ ! -f "$IMAGE" ]; then
 fi
 
 # DNS configuration per mode:
-# - block-local: system DNS is at a blocked private IP, so force 1.1.1.1.
+# - block-local: system DNS is at a blocked private IP, so force a public
+#   resolver. Use 1.1.1.1 (IPv4) by default; on IPv6-only hosts, use
+#   2606:4700:4700::1111 (Cloudflare's IPv6 equivalent) since 1.1.1.1 is
+#   unreachable without an IPv4 route.
 # - block-all: smolvm's --allow-host handles DNS filtering; don't override.
 # - block-internet/allow-all: system DNS is reachable, use it for internal
 #   hostname resolution.
@@ -587,7 +613,13 @@ DNS_SERVER=""
 if [ -n "$DNS_OVERRIDE" ]; then
   DNS_SERVER="$DNS_OVERRIDE"
 elif [ "$NETWORK_MODE" = "block-local" ]; then
-  DNS_SERVER="1.1.1.1"
+  v4rc=0
+  host_has_ipv4_route || v4rc=$?
+  if [ "$v4rc" -eq 1 ]; then
+    DNS_SERVER="2606:4700:4700::1111"
+  else
+    DNS_SERVER="1.1.1.1"
+  fi
 fi
 
 # Build the network flags based on the mode.
