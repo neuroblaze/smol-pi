@@ -23,6 +23,9 @@ RUN printf '%s\n' \
     'if [ -n "$SMOL_PI_DNS" ]; then' \
     '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
     'fi' \
+    'if [ -n "$SMOL_PI_NO_AAAA" ]; then' \
+    '  echo "options no-aaaa" >> /etc/resolv.conf' \
+    'fi' \
     'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
     '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
     'fi' \

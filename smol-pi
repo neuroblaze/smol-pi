@@ -222,6 +222,54 @@ $h"
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Probe whether the host has a route to the global IPv6 internet.
+#
+# smol-pi's VM has no real network interface (libkrun TSI forwards connect()
+# to the host), so Happy Eyeballs can't fall back from IPv6 to IPv4 when the
+# host lacks IPv6 — the guest's connect() stalls on the AAAA address until
+# the app's timeout (issue #1). When the host has no global IPv6 route, we
+# set SMOL_PI_NO_AAAA=1 so the guest resolver suppresses AAAA records.
+#
+# Returns 0 if the host can reach the global IPv6 internet, 1 if not, 2 if
+# the probe can't determine (no iproute2 and no /proc/net/ipv6_route). On
+# "undetermined" we don't set no-aaaa, to avoid breaking IPv6-capable hosts.
+# ---------------------------------------------------------------------------
+host_has_ipv6_route() {
+  if command -v ip >/dev/null 2>&1; then
+    # Primary: ask the kernel for a route to the global IPv6 unicast space
+    # (2000::/3). This resolves through default routes, on-link routes, etc.
+    ip -6 route get 2000::/3 >/dev/null 2>&1 && return 0
+    # Fallback: scan for a default route whose gateway is global (not ULA
+    # fc00::/7, not link-local fe80::/10). A ULA/LL gateway default route
+    # doesn't reach the global IPv6 internet.
+    for gw in $(ip -6 route 2>/dev/null | sed -n 's/^default via \([^ ]*\).*/\1/p'); do
+      case "$gw" in
+        fc[0-9a-f]*|fd[0-9a-f]*) continue ;;       # ULA fc00::/7
+        fe8[0-9a-f]*|fe9[0-9a-f]*|fea[0-9a-f]*|feb[0-9a-f]*) continue ;;  # fe80::/10
+        *) return 0 ;;
+      esac
+    done
+    return 1
+  fi
+  # No iproute2: parse /proc/net/ipv6_route. Format is space-separated hex:
+  # <dst> <dst_plen> <src> <src_plen> <gateway> <metric> ... <dev>
+  # A default route is dst=0000...0000 with prefixlen 00.
+  if [ -r /proc/net/ipv6_route ]; then
+    while read -r dst dplen src splen gw rest; do
+      [ "$dst" = "00000000000000000000000000000000" ] || continue
+      [ "$dplen" = "00" ] || continue
+      case "$gw" in
+        fc[0-9a-f]*|fd[0-9a-f]*) continue ;;       # ULA fc00::/7
+        fe8[0-9a-f]*|fe9[0-9a-f]*|fea[0-9a-f]*|feb[0-9a-f]*) continue ;;  # fe80::/10
+        *) return 0 ;;
+      esac
+    done < /proc/net/ipv6_route
+    return 1
+  fi
+  return 2
+}
+
 # Parse our own flags. Everything else is passed through to the command.
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -576,6 +624,16 @@ esac
 ENV_FLAGS=""
 if [ -n "$DNS_SERVER" ]; then
   ENV_FLAGS="-e SMOL_PI_DNS=$DNS_SERVER"
+fi
+
+# Probe the host for a global IPv6 route. If absent, tell the guest resolver
+# to suppress AAAA records so Happy Eyeballs doesn't stall on unreachable
+# IPv6 addresses (issue #1). On undetermined, leave it unset to avoid
+# breaking IPv6-capable hosts.
+rc=0
+host_has_ipv6_route || rc=$?
+if [ "$rc" -eq 1 ]; then
+  ENV_FLAGS="$ENV_FLAGS -e SMOL_PI_NO_AAAA=1"
 fi
 
 # Detect host terminal size and pass it to the VM.
