@@ -43,7 +43,7 @@ BANNER
 # ---------------------------------------------------------------------------
 # The release tag this installer ships from. Bumped on each release; the
 # README install command references the same tag in its URL.
-VERSION="v1.1.1"
+VERSION="v1.1.2"
 REPO="neuroblaze/smol-pi"
 PREFIX="${HOME}/.local"
 # Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
