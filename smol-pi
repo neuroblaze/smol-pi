@@ -541,7 +541,15 @@ if [ "$SHELL_MODE" -eq 0 ] && [ $# -gt 0 ]; then
 
       # Load the image from the tarball. podman can load directly; docker too.
       # The container tag is namespaced by image name to avoid collisions.
-      IMAGE_TAG="pi-sandbox-$IMAGE_NAME"
+      # Both podman and docker load tarballs as localhost/<name>, but docker
+      # can't resolve a bare <name> — it tries to pull from Docker Hub — so
+      # prefix with localhost/ for docker. podman resolves bare names to
+      # localhost/ automatically, but the prefix works there too.
+      if [ "$CT" = "docker" ]; then
+        IMAGE_TAG="localhost/pi-sandbox-$IMAGE_NAME"
+      else
+        IMAGE_TAG="pi-sandbox-$IMAGE_NAME"
+      fi
       if ! $CT image inspect "$IMAGE_TAG" >/dev/null 2>&1; then
         if [ ! -f "$IMAGE" ]; then
           echo "smol-pi: image not found at $IMAGE" >&2
