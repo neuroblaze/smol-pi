@@ -172,6 +172,7 @@ smol-pi --config <path>        Load a config file (default: ~/.local/etc/smol-pi
 smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
 smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
 smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
+smol-pi --ssh-agent            Forward host SSH agent into the guest (git/ssh)
 smol-pi --dns <server>         Override DNS server (default: mode-dependent)
 smol-pi --mem <MiB>            VM memory in MiB (default: 2048)
 smol-pi clean                   Remove stale smolvm cache (frees disk space)
@@ -179,6 +180,16 @@ smol-pi --help                  Show this help
 ```
 
 Memory: 2 GiB default (override with `--mem`; elastic via virtio-balloon).
+
+## SSH agent forwarding
+
+`--ssh-agent` forwards the host's SSH agent socket into the guest so `git`/`ssh` work inside the sandbox without ever exposing key files to it (protocol-level forwarding via smolvm — private key material never crosses the VM boundary, the guest can only request signatures). Off by default; enable via `--ssh-agent` or `SSH_AGENT=1` in a config file.
+
+```sh
+smol-pi --ssh-agent
+```
+
+smolvm forwards whatever `SSH_AUTH_SOCK` the calling shell has set — it isn't aware of specific agent implementations. On macOS, a plain terminal's ambient `SSH_AUTH_SOCK` is usually the default `launchd` agent (no identities loaded), since tools like 1Password route through `ssh_config`'s `IdentityAgent` rather than the env var. If you use 1Password's SSH agent (or similar), export `SSH_AUTH_SOCK` to point at its actual socket before running `smol-pi --ssh-agent`.
 
 ## Config file
 
@@ -206,6 +217,7 @@ Recognised keys:
 | `ALLOW_HOSTS` | `--allow-host` (space-separated) | `ALLOW_HOSTS=api.anthropic.com api.openai.com` |
 | `DNS` | `--dns` | `DNS=1.1.1.1` |
 | `MEM` | `--mem` | `MEM=4096` |
+| `SSH_AGENT` | `--ssh-agent` | `SSH_AGENT=1` |
 
 Per-scenario configs:
 
