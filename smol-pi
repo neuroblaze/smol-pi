@@ -16,6 +16,7 @@
 #   smol-pi --pi-dir <path>       # use an alternate .pi directory (default: ~/.pi)
 #   smol-pi --network-mode <mode> # set network egress mode (default: block-local)
 #   smol-pi --allow-host <host>   # allow egress to a specific host (block-all only)
+#   smol-pi --ssh-agent           # forward host SSH agent into the guest (git/ssh)
 #   smol-pi --dns <server>        # override the DNS server (default: mode-dependent)
 #   smol-pi --mem <MiB>           # set VM memory in MiB (default: 2048)
 #   smol-pi clean                 # remove stale smolvm cache (VM dirs + orphaned image archives)
@@ -74,6 +75,11 @@ NETWORK_MODE="block-local"
 # Allow-host exceptions (only used in block-all mode).
 ALLOW_HOSTS=""
 
+# Forward host SSH agent into the guest (git/ssh without exposing keys).
+# Off by default; enable via --ssh-agent or SSH_AGENT=1 in a config file.
+SSH_AGENT=0
+CLI_SSH_AGENT=0
+
 # DNS override (empty = mode-dependent default).
 DNS_OVERRIDE=""
 
@@ -95,6 +101,7 @@ Usage:
   smol-pi --pi-dir <path>        Use an alternate .pi directory (default: ~/.pi)
   smol-pi --network-mode <mode>  Set network egress mode (default: block-local)
   smol-pi --allow-host <host>    Allow egress to a specific host (block-all only)
+  smol-pi --ssh-agent            Forward host SSH agent into the guest (git/ssh)
   smol-pi --dns <server>        Override DNS server (default: mode-dependent)
   smol-pi --mem <MiB>           VM memory in MiB (default: 2048)
   smol-pi clean                   Remove stale smolvm cache (frees disk space)
@@ -127,7 +134,16 @@ Image: $DATA_DIR/<name>.tar (default name: pi).
 Config: a shell-var file (KEY=VALUE, one per line) at $CONFIG_FILE by
         default. Override with --config <path>. CLI flags take precedence
         over config-file values. Recognised keys: IMAGE, PI_DIR,
-        NETWORK_MODE, ALLOW_HOSTS (space-separated), DNS, MEM.
+        NETWORK_MODE, ALLOW_HOSTS (space-separated), DNS, MEM, SSH_AGENT.
+
+SSH agent forwarding: --ssh-agent forwards whatever SSH_AUTH_SOCK the
+        calling shell has set into the guest, so git/ssh work inside the
+        sandbox without ever exposing key files to it (protocol-level
+        forwarding via smolvm; private key material never crosses the VM
+        boundary). If you use 1Password's SSH agent (or a similar tool
+        that doesn't set SSH_AUTH_SOCK by default), export SSH_AUTH_SOCK
+        to point at its actual socket before running smol-pi --ssh-agent
+        — your shell's ambient value likely isn't it.
 
 clean: smolvm >= 1.3.1 cleans up VM state automatically on graceful
        exit. \`smol-pi clean\` is a safety net for crash recovery (SIGKILL'd
@@ -149,6 +165,7 @@ CLI_NETWORK_MODE=0
 CLI_ALLOW_HOSTS=0
 CLI_DNS=0
 CLI_MEM=0
+CLI_SSH_AGENT=0
 
 # ---------------------------------------------------------------------------
 # Cleanup function: remove stale smolvm VM state dirs and orphaned image
@@ -366,6 +383,11 @@ while [ $# -gt 0 ]; do
       CLI_NETWORK_MODE=1
       shift
       ;;
+    --ssh-agent)
+      SSH_AGENT=1
+      CLI_SSH_AGENT=1
+      shift
+      ;;
     --allow-host)
       if [ $# -lt 2 ]; then
         echo "smol-pi: --allow-host requires an argument" >&2
@@ -441,6 +463,7 @@ if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
     [ -n "$ALLOW_HOSTS" ] && printf 'ALLOW_HOSTS=%s\n' "$ALLOW_HOSTS"
     [ -n "$DNS" ] && printf 'DNS=%s\n' "$DNS"
     [ -n "$MEM" ] && printf 'MEM=%s\n' "$MEM"
+    [ -n "$SSH_AGENT" ] && printf 'SSH_AGENT=%s\n' "$SSH_AGENT"
   )
   # Apply config values only where the CLI didn't set the flag.
   if [ "$CLI_IMAGE" -eq 0 ]; then
@@ -466,6 +489,10 @@ if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
   if [ "$CLI_MEM" -eq 0 ]; then
     cfg_mem=$(printf '%s\n' "$cfg_out" | sed -n 's/^MEM=//p' | head -n 1)
     [ -n "$cfg_mem" ] && MEM="$cfg_mem"
+  fi
+  if [ "$CLI_SSH_AGENT" -eq 0 ]; then
+    cfg_ssh_agent=$(printf '%s\n' "$cfg_out" | sed -n 's/^SSH_AGENT=//p' | head -n 1)
+    [ -n "$cfg_ssh_agent" ] && SSH_AGENT="$cfg_ssh_agent"
   fi
 fi
 
@@ -660,6 +687,16 @@ case "$NETWORK_MODE" in
     ;;
 esac
 
+# SSH agent forwarding (git/ssh without exposing keys). Independent of
+# network mode -- this is a distinct forwarding channel smolvm sets up,
+# not egress filtering. Forwards whatever SSH_AUTH_SOCK the calling shell
+# has set; see --help for a note about agents like 1Password that don't
+# set SSH_AUTH_SOCK by default.
+SSH_AGENT_FLAGS=""
+if [ "$SSH_AGENT" = "1" ]; then
+  SSH_AGENT_FLAGS="--ssh-agent"
+fi
+
 # Build the env flags for DNS injection.
 ENV_FLAGS=""
 if [ -n "$DNS_SERVER" ]; then
@@ -739,6 +776,7 @@ smolvm machine run \
   -v "$PI_DIR:/root/.pi" \
   $NET_FLAGS \
   $ENV_FLAGS \
+  $SSH_AGENT_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
 VM_EXIT=$?
