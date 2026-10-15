@@ -41,7 +41,7 @@ less install.sh
 sh install.sh
 ```
 
-This downloads `smol-pi`, `smol-pi-build`, and `Dockerfile.pi` to `~/.local/bin/` (override with `--prefix <dir>`). The installer is pinned to a release tag, so the files you get are immutable and reproducible.
+This downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` and `Dockerfile.pi` to `~/.local/etc/smol-pi/` (override with `--prefix <dir>`). The installer is pinned to a release tag, so the files you get are immutable and reproducible.
 
 To install a different release:
 
@@ -285,7 +285,7 @@ The `--no-cache` build ensures you get fresh base images, but you should still r
 | File | Description |
 |------|-------------|
 | `smol-pi` | Launcher script — boots the VM with network/DNS config |
-| `smol-pi-build` | Image builder — podman/docker, `--no-cache`, embeds the default Dockerfile |
+| `smol-pi-build` | Image builder — podman/docker, `--no-cache`, reads the installed default Dockerfile |
 | `Dockerfile.pi` | Default image definition — node:24-trixie-slim + pi + uv + QoL utils |
 | `install.sh` | One-line installer — downloads scripts, checks prereqs |
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |

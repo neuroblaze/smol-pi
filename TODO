@@ -38,8 +38,9 @@ marginal size win. Revisit if smolvm adds native `.tar.zst` support.
 ## 4. Refactor `build.sh` -> `smol-pi-build` with Dockerfile options
 
 **Done.** `smol-pi-build` supports `-f <path>`, `--generate-dockerfile`,
-and `--image-tag <name>`. The default Dockerfile is embedded as a
-heredoc so `--generate-dockerfile` works without the repo.
+and `--image-tag <name>`. The default Dockerfile is installed to the data
+directory ($PREFIX/etc/smol-pi) and `--generate-dockerfile` copies it from
+there.
 
 ## 5. Network modes (`--network-mode`)
 

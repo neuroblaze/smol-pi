@@ -6,7 +6,7 @@
 #   smol-pi-build                       # build the default image (pi)
 #   smol-pi-build rust                  # build Dockerfile.rust -> rust.tar
 #   smol-pi-build -f <path>             # build a custom Dockerfile
-#   smol-pi-build --generate-dockerfile # write the default Dockerfile to CWD
+#   smol-pi-build --generate-dockerfile # copy the default Dockerfile to CWD
 #
 # The image name is derived from the positional argument: 'rust' builds
 # Dockerfile.rust and writes rust.tar. With no argument, Dockerfile.pi is
@@ -44,11 +44,11 @@ Usage:
   smol-pi-build [<name>]               Build Dockerfile.<name> -> <name>.tar
                                         (default name: pi -> Dockerfile.pi)
   smol-pi-build -f <path>              Build a custom Dockerfile (name: pi)
-  smol-pi-build --generate-dockerfile  Write the default Dockerfile.pi to CWD
+  smol-pi-build --generate-dockerfile  Copy the default Dockerfile.pi to CWD
 
 Options:
   -f <path>           Build a custom Dockerfile instead of Dockerfile.<name>
-  --generate-dockerfile  Write the default Dockerfile to ./Dockerfile.pi
+  --generate-dockerfile  Copy the installed Dockerfile.pi to ./Dockerfile.pi
   --help, -h          Show this help
 
 Dockerfile lookup: ./Dockerfile.<name> (CWD) is checked first, then the
@@ -109,9 +109,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Handle --generate-dockerfile: write the default Dockerfile to CWD.
+# Handle --generate-dockerfile: copy the default Dockerfile to CWD.
 # ---------------------------------------------------------------------------
-# The default Dockerfile is embedded below so this script is self-contained.
+# The default Dockerfile lives in the data directory (installed alongside
+# this script), so there is only one copy to maintain.
 write_default_dockerfile() {
   target="$1"
   if [ -f "$target" ]; then
@@ -119,46 +120,13 @@ write_default_dockerfile() {
     echo "smol-pi-build: remove it first if you want a fresh copy." >&2
     exit 1
   fi
-  cat > "$target" <<'DOCKERFILE'
-FROM node:24-trixie-slim
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends \
-       bash ca-certificates coreutils curl file findutils git gnupg \
-       iproute2 iputils-ping iputils-tracepath jq fd-find less \
-       make openssh-client procps ripgrep rsync \
-       sudo tar unzip vim xz-utils zstd \
-  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
-
-RUN printf '%s\n' \
-    '#!/bin/sh' \
-    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
-    '# then exec.' \
-    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
-    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
-    '# This only affects the initial size — terminal resize signals still work.' \
-    'if [ -n "$SMOL_PI_DNS" ]; then' \
-    '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
-    'fi' \
-    'if [ -n "$SMOL_PI_NO_AAAA" ]; then' \
-    '  echo "options no-aaaa" >> /etc/resolv.conf' \
-    'fi' \
-    'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
-    '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
-    'fi' \
-    'cd /workspace 2>/dev/null || true' \
-    'exec "$@"' \
-  > /usr/local/bin/smol-pi-entrypoint \
-  && chmod +x /usr/local/bin/smol-pi-entrypoint
-
-WORKDIR /workspace
-ENTRYPOINT ["pi"]
-DOCKERFILE
+  src="$DATA_DIR/Dockerfile.pi"
+  if [ ! -f "$src" ]; then
+    echo "smol-pi-build: default Dockerfile not found: $src" >&2
+    echo "smol-pi-build: re-run install.sh to restore it." >&2
+    exit 1
+  fi
+  cp "$src" "$target"
   echo "smol-pi-build: wrote default Dockerfile to $target"
 }
 

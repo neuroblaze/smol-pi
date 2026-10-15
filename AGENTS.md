@@ -83,8 +83,9 @@ smolvm adds a feature that makes the smaller image matter more.
 - `smol-pi` — launcher script (boots the VM)
 - `smol-pi-build` — image builder (podman/docker)
 - `install.sh` — one-line installer (pinned to a release tag)
-- `Dockerfile.pi` — image definition (also embedded in `smol-pi-build`
-  via a heredoc so `--generate-dockerfile` works without the repo)
+- `Dockerfile.pi` — image definition; `install.sh` installs it to
+  `$PREFIX/etc/smol-pi` and `smol-pi-build --generate-dockerfile` copies
+  it from there (no embedded duplicate in the script)
 - `scripts/compute_cidrs.py` — generates the CIDR allowlist blocks in
   `smol-pi`; rerun if the network-mode filtering needs adjusting
 - `TODO` — improvement ideas and findings
