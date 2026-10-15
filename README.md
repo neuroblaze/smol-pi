@@ -25,7 +25,7 @@ Running an AI coding agent directly on your machine means it has access to your 
 
 - **smolvm** — the microVM runtime. Install: `curl -sSL https://smolmachines.com/install.sh | bash`
 - **podman or docker** — needed to build the sandbox image and run pi subcommands. podman is preferred (rootless, no daemon).
-- **Linux** with KVM (x86_64 or arm64). macOS support is expected but untested — see [TODO](TODO.md) item "macOS testing."
+- **Linux** with KVM (x86_64 or arm64). macOS support is expected but untested.
 
 ## Install
 
@@ -289,7 +289,6 @@ The `--no-cache` build ensures you get fresh base images, but you should still r
 | `Dockerfile.pi` | Default image definition — node:24-trixie-slim + pi + uv + QoL utils |
 | `install.sh` | One-line installer — downloads scripts, checks prereqs |
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |
-| `TODO` | Improvement ideas and findings |
 
 ## License
 

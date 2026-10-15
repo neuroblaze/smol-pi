@@ -88,10 +88,7 @@ smolvm adds a feature that makes the smaller image matter more.
   it from there (no embedded duplicate in the script)
 - `scripts/compute_cidrs.py` — generates the CIDR allowlist blocks in
   `smol-pi`; rerun if the network-mode filtering needs adjusting
-- `TODO` — improvement ideas and findings
 - `security_audit.md` — notes from a security review of the sandbox
-- `pi-shift-enter.keytab` — leftover from a removed SSH transport; kept
-  for reference
 
 All scripts are POSIX `sh` (not bash) — syntax-check with `sh -n` before
 committing.
