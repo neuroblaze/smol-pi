@@ -29,6 +29,15 @@ Running an AI coding agent directly on your machine means it has access to your 
 3. smolvm boots a real Linux kernel in a microVM (KVM on Linux, Hypervisor.framework on macOS), with network egress filtered by smolvm's userspace network stack.
 4. When the command exits, the VM is destroyed. Only the mounted directories persist.
 
+## Agent environment notes (AGENTS.md samples)
+
+Agents dropped into the sandbox burn context rediscovering where they are. The `sample_AGENTS/` directory has ready-to-paste notes:
+
+- [`sample_AGENTS/AGENTS_default.md`](sample_AGENTS/AGENTS_default.md) — the default image: ephemeral libkrun/smolvm VM, mounted directories, installed tooling, and the networking quirks (TSI, no ICMP, published ports).
+- [`sample_AGENTS/AGENTS_computer-use.md`](sample_AGENTS/AGENTS_computer-use.md) — everything above plus the Xvfb desktop, AT-SPI/EWMH/XTEST tooling, and input workarounds for the pi-computer-use extension.
+
+Copy the one matching your image into your project's `AGENTS.md` so pi starts with context.
+
 ## Prerequisites
 
 - **smolvm** - the microVM runtime. Install: `curl -sSL https://smolmachines.com/install.sh | bash`
@@ -329,6 +338,7 @@ The `--no-cache` build ensures you get fresh base images, but you should still r
 | `smol-pi-build` | Image builder — podman/docker, `--no-cache`, builds `Dockerfile.<name>` |
 | `Dockerfile.pi` | Default image definition — node:24-trixie-slim + pi + uv + QoL utils |
 | `Dockerfile.computer-use` | Optional desktop image — Xvfb + openbox + AT-SPI2 + x11vnc + Chromium |
+| `sample_AGENTS/` | Ready-to-paste environment notes for your project's `AGENTS.md` |
 | `install.sh` | One-line installer — downloads scripts, checks prereqs |
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |
 
