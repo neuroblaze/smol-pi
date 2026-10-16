@@ -90,6 +90,8 @@ smolvm adds a feature that makes the smaller image matter more.
   AT-SPI2 + x11vnc + Chromium); its entrypoint hook
   `/etc/smol-pi/desktop-init.sh` is sourced by the shared
   `smol-pi-entrypoint` when present; `smol-pi --vnc` exposes it
+- `sample_AGENTS/` — ready-to-paste sandbox environment notes for
+  users' `AGENTS.md` files (default and computer-use images)
 - `scripts/compute_cidrs.py` — generates the CIDR allowlist blocks in
   `smol-pi`; rerun if the network-mode filtering needs adjusting
 - `security_audit.md` — notes from a security review of the sandbox
