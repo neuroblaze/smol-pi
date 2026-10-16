@@ -2,20 +2,20 @@
 # install.sh — install smol-pi: an ephemeral microVM sandbox for the pi agent.
 #
 # By default this installs the release tagged with VERSION below. Use
-# --version <tag> to install a specific release (e.g. --version v1.0.0)
+# --version <tag> to install a specific release (e.g. --version v1.0.1)
 # or --version latest to auto-resolve the newest release via the GitHub API.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.2.0/install.sh | sh
+#   curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.3.0/install.sh | sh
 #
 # Or download-and-review:
-#   curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.1.1/install.sh
+#   curl -sSL -o install.sh https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.3.0/install.sh
 #   less install.sh
 #   sh install.sh
 #
 # Options:
 #   --prefix <dir>       Install to <dir>/bin and <dir>/etc (default: ~/.local)
-#   --version <tag>      Release tag to install (default: v1.1.1; or "latest")
+#   --version <tag>      Release tag to install (default: v1.3.0; or "latest")
 #   --list-versions      Print available release tags and exit
 
 set -e
@@ -43,12 +43,12 @@ BANNER
 # ---------------------------------------------------------------------------
 # The release tag this installer ships from. Bumped on each release; the
 # README install command references the same tag in its URL.
-VERSION="v1.2.0"
+VERSION="v1.3.0"
 REPO="neuroblaze/smol-pi"
 PREFIX="${HOME}/.local"
 # Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
 BIN_FILES="smol-pi smol-pi-build"
-ETC_FILES="Dockerfile.pi"
+ETC_FILES="Dockerfile.pi Dockerfile.computer-use"
 
 # ---------------------------------------------------------------------------
 # Parse options
@@ -196,7 +196,10 @@ done
 
 for f in $ETC_FILES; do
   echo "    downloading $f"
-  curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"
+  if ! curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"; then
+    echo "    note: $f is not available in $RESOLVED_VERSION; skipping"
+    rm -f "$ETCDIR/$f"
+  fi
 done
 
 chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build"

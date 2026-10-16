@@ -1,0 +1,97 @@
+FROM node:24-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       bash ca-certificates coreutils curl file findutils git gnupg \
+       iproute2 iputils-ping iputils-tracepath jq fd-find less \
+       make openssh-client procps ripgrep rsync \
+       sudo tar unzip vim xz-utils zstd \
+  && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+  && rm -rf /var/lib/apt/lists/*
+
+# Desktop stack: virtual framebuffer (Xvfb), EWMH window manager (openbox),
+# session bus + AT-SPI2 (accessibility), VNC server (x11vnc), and a browser.
+# pi-computer-use drives this via AT-SPI/EWMH/XTEST/XComposite.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+       at-spi2-core chromium dbus fonts-dejavu-core fonts-liberation \
+       fonts-noto-color-emoji openbox scrot x11-utils x11-xserver-utils \
+       x11vnc xclip xdg-utils xterm xvfb zenity \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, source the' \
+    '# optional desktop hook, cd to /workspace, then exec.' \
+    '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
+    '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
+    '# This only affects the initial size — terminal resize signals still work.' \
+    'if [ -n "$SMOL_PI_DNS" ]; then' \
+    '  echo "nameserver $SMOL_PI_DNS" > /etc/resolv.conf' \
+    'fi' \
+    'if [ -n "$SMOL_PI_NO_AAAA" ]; then' \
+    '  echo "options no-aaaa" >> /etc/resolv.conf' \
+    'fi' \
+    'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
+    '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
+    'fi' \
+    'if [ -f /etc/smol-pi/desktop-init.sh ]; then' \
+    '  . /etc/smol-pi/desktop-init.sh' \
+    'fi' \
+    'cd /workspace 2>/dev/null || true' \
+    'exec "$@"' \
+  > /usr/local/bin/smol-pi-entrypoint \
+  && chmod +x /usr/local/bin/smol-pi-entrypoint
+
+RUN mkdir -p /etc/smol-pi \
+  && printf '%s\n' \
+    '# smol-pi desktop init: start Xvfb, a D-Bus session bus, and openbox;' \
+    '# start x11vnc only when SMOL_PI_VNC=1. Sourced by smol-pi-entrypoint,' \
+    '# so DISPLAY and DBUS_SESSION_BUS_ADDRESS are inherited by pi and any' \
+    '# apps it launches. Daemon logs: /tmp/smol-pi-desktop.log.' \
+    'DESKTOP_LOG=/tmp/smol-pi-desktop.log' \
+    'DISPLAY_NUM="${SMOL_PI_DESKTOP_DISPLAY:-:99}"' \
+    'GEOMETRY="${SMOL_PI_DESKTOP_GEOMETRY:-1920x1080x24}"' \
+    '' \
+    'Xvfb "$DISPLAY_NUM" -screen 0 "$GEOMETRY" -nolisten tcp >>"$DESKTOP_LOG" 2>&1 &' \
+    'i=0' \
+    'while ! xdpyinfo -display "$DISPLAY_NUM" >/dev/null 2>&1; do' \
+    '  i=$((i + 1))' \
+    '  if [ "$i" -ge 100 ]; then' \
+    '    echo "smol-pi: Xvfb failed to start; see $DESKTOP_LOG" >&2' \
+    '    break' \
+    '  fi' \
+    '  sleep 0.1' \
+    'done' \
+    'export DISPLAY="$DISPLAY_NUM"' \
+    '' \
+    'DBUS_SESSION_BUS_ADDRESS="$(dbus-daemon --session --fork --print-address=1)"' \
+    'export DBUS_SESSION_BUS_ADDRESS' \
+    '' \
+    'openbox --sm-disable >>"$DESKTOP_LOG" 2>&1 &' \
+    '' \
+    'if [ "$SMOL_PI_VNC" = "1" ]; then' \
+    '# Note: no -localhost here. smolvm forwards published ports to the' \
+    '# guest non-loopback address, and the guest has no externally' \
+    '# reachable interface of its own; the host side binds 127.0.0.1.' \
+    '  x11vnc -display "$DISPLAY_NUM" -forever -shared -nopw -rfbport 5900 >>"$DESKTOP_LOG" 2>&1 &' \
+    'fi' \
+    '' \
+    'export QT_ACCESSIBILITY=1' \
+  > /etc/smol-pi/desktop-init.sh \
+  && chmod +x /etc/smol-pi/desktop-init.sh
+
+# Chromium refuses to run as root without --no-sandbox, and benefits from
+# --disable-dev-shm-usage in the VM. The sandbox boundary is the VM itself.
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'exec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"' \
+  > /usr/local/bin/chromium \
+  && chmod +x /usr/local/bin/chromium
+
+WORKDIR /workspace
+ENTRYPOINT ["pi"]

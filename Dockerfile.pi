@@ -15,8 +15,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 RUN printf '%s\n' \
     '#!/bin/sh' \
-    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, cd to /workspace,' \
-    '# then exec.' \
+    '# smol-pi entrypoint: optionally rewrite DNS, set TTY size, source the' \
+    '# optional desktop hook, cd to /workspace, then exec.' \
     '# smolvm allocates the PTY at 24x80 by default. If COLUMNS/LINES env vars are' \
     '# set (passed from the host terminal via smol-pi), resize the PTY to match.' \
     '# This only affects the initial size — terminal resize signals still work.' \
@@ -28,6 +28,9 @@ RUN printf '%s\n' \
     'fi' \
     'if [ -n "$COLUMNS" ] && [ -n "$LINES" ]; then' \
     '  stty rows "$LINES" cols "$COLUMNS" 2>/dev/null' \
+    'fi' \
+    'if [ -f /etc/smol-pi/desktop-init.sh ]; then' \
+    '  . /etc/smol-pi/desktop-init.sh' \
     'fi' \
     'cd /workspace 2>/dev/null || true' \
     'exec "$@"' \

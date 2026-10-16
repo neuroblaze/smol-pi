@@ -19,6 +19,9 @@
 #   smol-pi --ssh-agent           # forward host SSH agent into the guest (git/ssh)
 #   smol-pi --dns <server>        # override the DNS server (default: mode-dependent)
 #   smol-pi --mem <MiB>           # set VM memory in MiB (default: 2048)
+#   smol-pi --vnc                 # expose the guest desktop via VNC (localhost:5900)
+#   smol-pi --vnc-port <port>     # host port for --vnc (default: 5900)
+#   smol-pi --port <host:guest>   # publish a guest port to localhost (repeatable)
 #   smol-pi clean                 # remove stale smolvm cache (VM dirs + orphaned image archives)
 #   smol-pi --help                # show this help
 #
@@ -80,6 +83,15 @@ ALLOW_HOSTS=""
 SSH_AGENT=0
 CLI_SSH_AGENT=0
 
+# VNC exposure for desktop images (e.g. computer-use): off by default.
+# --vnc maps guest :5900 to a localhost port on the host and sets
+# SMOL_PI_VNC=1, which the desktop hook uses to start x11vnc.
+VNC=0
+VNC_PORT=5900
+
+# Extra port forwards, space-separated host:guest specs for smolvm -p.
+PORT_FORWARDS=""
+
 # DNS override (empty = mode-dependent default).
 DNS_OVERRIDE=""
 
@@ -104,6 +116,9 @@ Usage:
   smol-pi --ssh-agent            Forward host SSH agent into the guest (git/ssh)
   smol-pi --dns <server>        Override DNS server (default: mode-dependent)
   smol-pi --mem <MiB>           VM memory in MiB (default: 2048)
+  smol-pi --vnc                  Expose the guest desktop via VNC (localhost:5900)
+  smol-pi --vnc-port <port>      Host port for --vnc (default: 5900)
+  smol-pi --port <host:guest>    Publish a guest port to localhost (repeatable)
   smol-pi clean                   Remove stale smolvm cache (frees disk space)
   smol-pi --help                  Show this help
 
@@ -126,6 +141,16 @@ DNS: block-local forces 1.1.1.1; other modes use the system DNS injected
      by smolvm (so internal hostnames resolve). Override with --dns.
 
 Memory: 2 GiB default (override with --mem; elastic via virtio-balloon).
+        Browser-heavy work (computer-use image) may want --mem 4096.
+
+VNC: --vnc exposes the guest desktop on the host at localhost:5900, for
+     desktop images like computer-use. Connect with any VNC client:
+       vnc://localhost:5900        (macOS: open vnc://localhost:5900)
+     Use --vnc-port <port> to change the host port. VNC is only started
+     when --vnc is given, and only desktop images act on it.
+
+Ports: --port <host:guest> publishes another guest port to localhost
+       (e.g. --port 5173:5173 to reach a dev server). Repeatable.
 
 Image: $DATA_DIR/<name>.tar (default name: pi).
        For the default image, pi-sandbox.tar is used as a fallback if
@@ -134,7 +159,8 @@ Image: $DATA_DIR/<name>.tar (default name: pi).
 Config: a shell-var file (KEY=VALUE, one per line) at $CONFIG_FILE by
         default. Override with --config <path>. CLI flags take precedence
         over config-file values. Recognised keys: IMAGE, PI_DIR,
-        NETWORK_MODE, ALLOW_HOSTS (space-separated), DNS, MEM, SSH_AGENT.
+        NETWORK_MODE, ALLOW_HOSTS (space-separated), DNS, MEM, SSH_AGENT,
+        VNC, VNC_PORT, PORTS (space-separated).
 
 SSH agent forwarding: --ssh-agent forwards whatever SSH_AUTH_SOCK the
         calling shell has set into the guest, so git/ssh work inside the
@@ -166,6 +192,9 @@ CLI_ALLOW_HOSTS=0
 CLI_DNS=0
 CLI_MEM=0
 CLI_SSH_AGENT=0
+CLI_VNC=0
+CLI_VNC_PORT=0
+CLI_PORTS=0
 
 # ---------------------------------------------------------------------------
 # Cleanup function: remove stale smolvm VM state dirs and orphaned image
@@ -430,6 +459,43 @@ while [ $# -gt 0 ]; do
       CLI_MEM=1
       shift
       ;;
+    --vnc)
+      VNC=1
+      CLI_VNC=1
+      shift
+      ;;
+    --vnc-port)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --vnc-port requires an argument" >&2
+        exit 2
+      fi
+      VNC_PORT="$2"
+      VNC=1
+      CLI_VNC=1
+      CLI_VNC_PORT=1
+      shift 2
+      ;;
+    --vnc-port=*)
+      VNC_PORT="${1#--vnc-port=}"
+      VNC=1
+      CLI_VNC=1
+      CLI_VNC_PORT=1
+      shift
+      ;;
+    --port)
+      if [ $# -lt 2 ]; then
+        echo "smol-pi: --port requires an argument (host:guest)" >&2
+        exit 2
+      fi
+      PORT_FORWARDS="$PORT_FORWARDS $2"
+      CLI_PORTS=1
+      shift 2
+      ;;
+    --port=*)
+      PORT_FORWARDS="$PORT_FORWARDS ${1#--port=}"
+      CLI_PORTS=1
+      shift
+      ;;
     *)
       # First non-smol-pi arg: stop parsing, pass the rest through.
       # In shell mode these args go to /bin/sh; otherwise to pi.
@@ -464,6 +530,9 @@ if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
     [ -n "$DNS" ] && printf 'DNS=%s\n' "$DNS"
     [ -n "$MEM" ] && printf 'MEM=%s\n' "$MEM"
     [ -n "$SSH_AGENT" ] && printf 'SSH_AGENT=%s\n' "$SSH_AGENT"
+    [ -n "$VNC" ] && printf 'VNC=%s\n' "$VNC"
+    [ -n "$VNC_PORT" ] && printf 'VNC_PORT=%s\n' "$VNC_PORT"
+    [ -n "$PORTS" ] && printf 'PORTS=%s\n' "$PORTS"
   )
   # Apply config values only where the CLI didn't set the flag.
   if [ "$CLI_IMAGE" -eq 0 ]; then
@@ -493,6 +562,18 @@ if [ -n "$CONFIG_FILE" ] && [ -f "$CONFIG_FILE" ]; then
   if [ "$CLI_SSH_AGENT" -eq 0 ]; then
     cfg_ssh_agent=$(printf '%s\n' "$cfg_out" | sed -n 's/^SSH_AGENT=//p' | head -n 1)
     [ -n "$cfg_ssh_agent" ] && SSH_AGENT="$cfg_ssh_agent"
+  fi
+  if [ "$CLI_VNC" -eq 0 ]; then
+    cfg_vnc=$(printf '%s\n' "$cfg_out" | sed -n 's/^VNC=//p' | head -n 1)
+    [ -n "$cfg_vnc" ] && VNC="$cfg_vnc"
+  fi
+  if [ "$CLI_VNC_PORT" -eq 0 ]; then
+    cfg_vnc_port=$(printf '%s\n' "$cfg_out" | sed -n 's/^VNC_PORT=//p' | head -n 1)
+    [ -n "$cfg_vnc_port" ] && VNC_PORT="$cfg_vnc_port"
+  fi
+  if [ "$CLI_PORTS" -eq 0 ]; then
+    cfg_ports=$(printf '%s\n' "$cfg_out" | sed -n 's/^PORTS=//p' | head -n 1)
+    [ -n "$cfg_ports" ] && PORT_FORWARDS="$cfg_ports"
   fi
 fi
 
@@ -527,6 +608,24 @@ if [ -n "$ALLOW_HOSTS" ] && [ "$NETWORK_MODE" != "block-all" ]; then
   echo "smol-pi: --allow-host can only be used with --network-mode block-all" >&2
   echo "smol-pi: in other modes it breaks DNS resolution (smolvm limitation)" >&2
   exit 2
+fi
+
+# Normalise/validate VNC settings.
+case "$VNC" in
+  1) ;;
+  0|"") VNC=0 ;;
+  *)
+    echo "smol-pi: invalid VNC value: $VNC (use 1 or 0)" >&2
+    exit 2
+    ;;
+esac
+if [ "$VNC" = "1" ]; then
+  case "$VNC_PORT" in
+    ''|*[!0-9]*)
+      echo "smol-pi: invalid VNC port: $VNC_PORT" >&2
+      exit 2
+      ;;
+  esac
 fi
 
 # Resolve PI_DIR to an absolute path and create it if it doesn't exist.
@@ -697,6 +796,16 @@ if [ "$SSH_AGENT" = "1" ]; then
   SSH_AGENT_FLAGS="--ssh-agent"
 fi
 
+# Port forwards: smolvm binds published ports to localhost on the host.
+# --vnc publishes the guest's x11vnc port (5900).
+PORT_FLAGS=""
+if [ "$VNC" = "1" ]; then
+  PORT_FLAGS="$PORT_FLAGS -p $VNC_PORT:5900"
+fi
+for spec in $PORT_FORWARDS; do
+  PORT_FLAGS="$PORT_FLAGS -p $spec"
+done
+
 # Build the env flags for DNS injection.
 ENV_FLAGS=""
 if [ -n "$DNS_SERVER" ]; then
@@ -732,6 +841,19 @@ if [ -z "$TTY_COLS" ] && [ -n "$COLUMNS" ]; then TTY_COLS="$COLUMNS"; fi
 if [ -z "$TTY_ROWS" ] && [ -n "$LINES" ]; then TTY_ROWS="$LINES"; fi
 if [ -n "$TTY_COLS" ] && [ -n "$TTY_ROWS" ]; then
   ENV_FLAGS="$ENV_FLAGS -e COLUMNS=$TTY_COLS -e LINES=$TTY_ROWS"
+fi
+
+# Desktop images: start x11vnc only when asked, and let the host override
+# the guest desktop geometry.
+if [ "$VNC" = "1" ]; then
+  ENV_FLAGS="$ENV_FLAGS -e SMOL_PI_VNC=1"
+fi
+if [ -n "$SMOL_PI_DESKTOP_GEOMETRY" ]; then
+  ENV_FLAGS="$ENV_FLAGS -e SMOL_PI_DESKTOP_GEOMETRY=$SMOL_PI_DESKTOP_GEOMETRY"
+fi
+
+if [ "$VNC" = "1" ]; then
+  echo "smol-pi: desktop VNC on localhost:$VNC_PORT (vnc://localhost:$VNC_PORT)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -777,6 +899,7 @@ smolvm machine run \
   $NET_FLAGS \
   $ENV_FLAGS \
   $SSH_AGENT_FLAGS \
+  $PORT_FLAGS \
   -it \
   -- /usr/local/bin/smol-pi-entrypoint $CMD "$@"
 VM_EXIT=$?
