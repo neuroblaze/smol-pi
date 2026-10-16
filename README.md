@@ -38,7 +38,7 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Install
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.2.0/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.3.0/install.sh | sh
 ```
 
 This downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` and the shipped Dockerfiles (`Dockerfile.pi`, `Dockerfile.computer-use`) to `~/.local/etc/smol-pi/` (if desired, you can override the `~/.local/` prefix with `--prefix <dir>`).
