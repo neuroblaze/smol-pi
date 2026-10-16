@@ -132,6 +132,7 @@ Notes:
 - **Memory**: browser work benefits from more RAM; using `--mem 4096` is recommended.
 - **Display size**: override the default geometry on the host, e.g. `SMOL_PI_DESKTOP_GEOMETRY=2560x1440x24 smol-pi --image computer-use`.
 - Desktop daemon logs live at `/tmp/smol-pi-desktop.log` inside the guest.
+- **Known issue**: pi-computer-use 0.5.1 cannot type unshifted punctuation (`.`, `/`, `-`, ...) with `typeText`/`setText` — its native helper is missing those keysyms (upstream fix pending). Until then, send those characters as single-character `keypress` actions, or paste text from the clipboard (`xclip` is installed in the image).
 
 ## Run
 

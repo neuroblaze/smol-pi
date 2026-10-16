@@ -82,6 +82,7 @@ RUN mkdir -p /etc/smol-pi \
     'fi' \
     '' \
     'export QT_ACCESSIBILITY=1' \
+    'export PI_COMPUTER_USE_CHROME_EXECUTABLE=/usr/local/bin/chromium' \
   > /etc/smol-pi/desktop-init.sh \
   && chmod +x /etc/smol-pi/desktop-init.sh
 
