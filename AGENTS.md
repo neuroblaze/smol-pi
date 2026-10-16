@@ -86,6 +86,10 @@ smolvm adds a feature that makes the smaller image matter more.
 - `Dockerfile.pi` — image definition; `install.sh` installs it to
   `$PREFIX/etc/smol-pi` and `smol-pi-build --generate-dockerfile` copies
   it from there (no embedded duplicate in the script)
+- `Dockerfile.computer-use` — optional desktop image (Xvfb + openbox +
+  AT-SPI2 + x11vnc + Chromium); its entrypoint hook
+  `/etc/smol-pi/desktop-init.sh` is sourced by the shared
+  `smol-pi-entrypoint` when present; `smol-pi --vnc` exposes it
 - `scripts/compute_cidrs.py` — generates the CIDR allowlist blocks in
   `smol-pi`; rerun if the network-mode filtering needs adjusting
 - `security_audit.md` — notes from a security review of the sandbox

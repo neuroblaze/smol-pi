@@ -48,7 +48,7 @@ REPO="neuroblaze/smol-pi"
 PREFIX="${HOME}/.local"
 # Executables go to $BINDIR (on PATH); data files go to $ETCDIR.
 BIN_FILES="smol-pi smol-pi-build"
-ETC_FILES="Dockerfile.pi"
+ETC_FILES="Dockerfile.pi Dockerfile.computer-use"
 
 # ---------------------------------------------------------------------------
 # Parse options

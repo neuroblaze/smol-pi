@@ -6,7 +6,7 @@
 #   smol-pi-build                       # build the default image (pi)
 #   smol-pi-build rust                  # build Dockerfile.rust -> rust.tar
 #   smol-pi-build -f <path>             # build a custom Dockerfile
-#   smol-pi-build --generate-dockerfile # copy the default Dockerfile to CWD
+#   smol-pi-build --generate-dockerfile [<name>] # copy a Dockerfile to CWD
 #
 # The image name is derived from the positional argument: 'rust' builds
 # Dockerfile.rust and writes rust.tar. With no argument, Dockerfile.pi is
@@ -35,6 +35,7 @@ fi
 IMAGE_NAME="pi"
 DOCKERFILE=""
 GENERATE=0
+GENERATE_NAME="pi"
 
 usage() {
   cat <<USAGE
@@ -44,11 +45,12 @@ Usage:
   smol-pi-build [<name>]               Build Dockerfile.<name> -> <name>.tar
                                         (default name: pi -> Dockerfile.pi)
   smol-pi-build -f <path>              Build a custom Dockerfile (name: pi)
-  smol-pi-build --generate-dockerfile  Copy the default Dockerfile.pi to CWD
+  smol-pi-build --generate-dockerfile [<name>]  Copy Dockerfile.<name> to CWD
 
 Options:
   -f <path>           Build a custom Dockerfile instead of Dockerfile.<name>
-  --generate-dockerfile  Copy the installed Dockerfile.pi to ./Dockerfile.pi
+  --generate-dockerfile [<name>]  Copy the installed Dockerfile.<name> to CWD
+                      (default name: pi)
   --help, -h          Show this help
 
 Dockerfile lookup: ./Dockerfile.<name> (CWD) is checked first, then the
@@ -80,6 +82,18 @@ while [ $# -gt 0 ]; do
     --generate-dockerfile)
       GENERATE=1
       shift
+      # Optional Dockerfile name: --generate-dockerfile [<name>]
+      if [ $# -gt 0 ]; then
+        case "$1" in
+          -*) ;;
+          *) GENERATE_NAME="$1"; shift ;;
+        esac
+      fi
+      ;;
+    --generate-dockerfile=*)
+      GENERATE=1
+      GENERATE_NAME="${1#--generate-dockerfile=}"
+      shift
       ;;
     -*)
       echo "smol-pi-build: unknown option: $1" >&2
@@ -109,29 +123,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Handle --generate-dockerfile: copy the default Dockerfile to CWD.
+# Handle --generate-dockerfile: copy Dockerfile.<name> to CWD.
 # ---------------------------------------------------------------------------
-# The default Dockerfile lives in the data directory (installed alongside
-# this script), so there is only one copy to maintain.
+# The shipped Dockerfiles live in the data directory (installed alongside
+# this script), so there is only one copy of each to maintain.
 write_default_dockerfile() {
-  target="$1"
+  name="$1"
+  target="./Dockerfile.$name"
   if [ -f "$target" ]; then
     echo "smol-pi-build: refusing to overwrite existing $target" >&2
     echo "smol-pi-build: remove it first if you want a fresh copy." >&2
     exit 1
   fi
-  src="$DATA_DIR/Dockerfile.pi"
+  src="$DATA_DIR/Dockerfile.$name"
   if [ ! -f "$src" ]; then
-    echo "smol-pi-build: default Dockerfile not found: $src" >&2
+    echo "smol-pi-build: Dockerfile.$name not found: $src" >&2
     echo "smol-pi-build: re-run install.sh to restore it." >&2
     exit 1
   fi
   cp "$src" "$target"
-  echo "smol-pi-build: wrote default Dockerfile to $target"
+  echo "smol-pi-build: wrote $target"
 }
 
 if [ "$GENERATE" -eq 1 ]; then
-  write_default_dockerfile "./Dockerfile.pi"
+  write_default_dockerfile "$GENERATE_NAME"
   exit 0
 fi
 

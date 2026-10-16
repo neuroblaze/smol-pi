@@ -41,7 +41,7 @@ less install.sh
 sh install.sh
 ```
 
-This downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` and `Dockerfile.pi` to `~/.local/etc/smol-pi/` (override with `--prefix <dir>`). The installer is pinned to a release tag, so the files you get are immutable and reproducible.
+This downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` and the shipped Dockerfiles (`Dockerfile.pi`, `Dockerfile.computer-use`) to `~/.local/etc/smol-pi/` (override with `--prefix <dir>`). The installer is pinned to a release tag, so the files you get are immutable and reproducible.
 
 To install a different release:
 
@@ -83,7 +83,7 @@ smol-pi --image rust       # rust.tar
 smol-pi --image cpp        # cpp.tar
 ```
 
-Images coexist in the data directory (`~/.local/etc/smol-pi/`); rebuilding one doesn't orphan another's smolvm image archive. To start from the default Dockerfile for a new image:
+Images coexist in the data directory (`~/.local/etc/smol-pi/`); rebuilding one doesn't orphan another's smolvm image archive. To start from a shipped Dockerfile for a new image (the default is `pi`; `computer-use` is also available):
 
 ```sh
 smol-pi-build --generate-dockerfile    # writes Dockerfile.pi to CWD
@@ -91,7 +91,7 @@ cp Dockerfile.pi Dockerfile.rust       # edit, add rustup/cargo, etc.
 smol-pi-build rust                     # builds Dockerfile.rust -> rust.tar
 ```
 
-The `-f <path>` flag is still available for ad-hoc custom Dockerfiles that don't follow the `Dockerfile.<name>` convention.
+The `-f <path>` flag is still available for ad-hoc custom Dockerfiles that don't follow the `Dockerfile.<name>` convention. `--generate-dockerfile <name>` copies any shipped Dockerfile (e.g. `smol-pi-build --generate-dockerfile computer-use`) so you can customize a desktop image without starting from scratch.
 
 #### Installing pi extensions
 
@@ -102,6 +102,38 @@ smol-pi install @anthropic/plan-mode
 ```
 
 This runs via the podman/docker fast path (no VM boot) and writes directly to `~/.pi` on the host, where the VM will pick it up on the next run.
+
+### Computer use (virtual desktop)
+
+`Dockerfile.computer-use` builds an optional image with a headless desktop so agents can work with GUI apps and web UIs:
+
+```sh
+smol-pi-build computer-use          # builds computer-use.tar
+smol-pi --image computer-use --vnc  # boot with VNC access to the desktop
+```
+
+The image contains Xvfb (1920x1080x24 virtual display), openbox (EWMH window manager), a D-Bus session bus with AT-SPI2 accessibility, x11vnc, and Chromium. It's compatible with the [`pi-computer-use`](https://github.com/injaneity/pi-computer-use) extension, which drives X11 apps via AT-SPI/EWMH and can use Chromium over CDP:
+
+```sh
+pi install npm:@injaneity/pi-computer-use      # installs the extension into ~/.pi
+smol-pi --image computer-use --vnc -p "open a browser and ..."
+```
+
+Notes:
+
+- **VNC** is opt-in (`--vnc`); connect to `vnc://localhost:5900` (macOS: `open vnc://localhost:5900`). `--vnc-port <port>` changes the host port. VNC is bound to localhost on the host only.
+- **Extra ports**: `--port <host:guest>` publishes any guest port to localhost, e.g. `--port 5173:5173` to open a dev server in your own browser while the agent works in Chromium.
+- **Memory**: browser work benefits from more RAM; use `--mem 4096`.
+- **Display size**: override the default geometry on the host, e.g. `SMOL_PI_DESKTOP_GEOMETRY=2560x1440x24 smol-pi --image computer-use`.
+- Desktop daemon logs live at `/tmp/smol-pi-desktop.log` inside the guest.
+
+Want a variant (Firefox, extra tooling, different WM)? Start from the shipped definition:
+
+```sh
+smol-pi-build --generate-dockerfile computer-use   # copies Dockerfile.computer-use to CWD
+# edit it to taste
+smol-pi-build computer-use
+```
 
 ## Run
 
@@ -287,6 +319,7 @@ The `--no-cache` build ensures you get fresh base images, but you should still r
 | `smol-pi` | Launcher script — boots the VM with network/DNS config |
 | `smol-pi-build` | Image builder — podman/docker, `--no-cache`, reads the installed default Dockerfile |
 | `Dockerfile.pi` | Default image definition — node:24-trixie-slim + pi + uv + QoL utils |
+| `Dockerfile.computer-use` | Optional desktop image — Xvfb + openbox + AT-SPI2 + x11vnc + Chromium |
 | `install.sh` | One-line installer — downloads scripts, checks prereqs |
 | `scripts/compute_cidrs.py` | CIDR allowlist generator with sanity checks |
 
