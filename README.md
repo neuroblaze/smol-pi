@@ -38,7 +38,7 @@ Running an AI coding agent directly on your machine means it has access to your 
 ## Install
 
 ```sh
-curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.3.0/install.sh | sh
+curl -sSL https://raw.githubusercontent.com/neuroblaze/smol-pi/v1.3.1/install.sh | sh
 ```
 
 This downloads `smol-pi` and `smol-pi-build` to `~/.local/bin/` and the shipped Dockerfiles (`Dockerfile.pi`, `Dockerfile.computer-use`) to `~/.local/etc/smol-pi/` (if desired, you can override the `~/.local/` prefix with `--prefix <dir>`).
@@ -132,6 +132,7 @@ Notes:
 - **Memory**: browser work benefits from more RAM; using `--mem 4096` is recommended.
 - **Display size**: override the default geometry on the host, e.g. `SMOL_PI_DESKTOP_GEOMETRY=2560x1440x24 smol-pi --image computer-use`.
 - Desktop daemon logs live at `/tmp/smol-pi-desktop.log` inside the guest.
+- **Known issue**: pi-computer-use 0.5.1 cannot type unshifted punctuation (`.`, `/`, `-`, ...) with `typeText`/`setText` — its native helper is missing those keysyms (upstream fix pending). Until then, send those characters as single-character `keypress` actions, or paste text from the clipboard (`xclip` is installed in the image).
 
 ## Run
 
