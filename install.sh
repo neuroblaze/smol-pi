@@ -2,7 +2,7 @@
 # install.sh — install smol-pi: an ephemeral microVM sandbox for the pi agent.
 #
 # By default this installs the release tagged with VERSION below. Use
-# --version <tag> to install a specific release (e.g. --version v1.0.0)
+# --version <tag> to install a specific release (e.g. --version v1.0.1)
 # or --version latest to auto-resolve the newest release via the GitHub API.
 #
 # Usage:
@@ -196,7 +196,10 @@ done
 
 for f in $ETC_FILES; do
   echo "    downloading $f"
-  curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"
+  if ! curl -sSfL "$BASE_URL/$f" -o "$ETCDIR/$f"; then
+    echo "    note: $f is not available in $RESOLVED_VERSION; skipping"
+    rm -f "$ETCDIR/$f"
+  fi
 done
 
 chmod +x "$BINDIR/smol-pi" "$BINDIR/smol-pi-build"
